@@ -1,0 +1,5 @@
+# 手眼标定工具依赖
+pyrealsense2>=2.54
+opencv-python>=4.8
+numpy>=1.24
+scipy>=1.11
