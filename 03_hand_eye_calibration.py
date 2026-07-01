@@ -186,11 +186,15 @@ def consistency_error(
         for j in range(i + 1, n):
             Ti = build_T(R_robot_list[i], t_robot_list[i])
             Tj = build_T(R_robot_list[j], t_robot_list[j])
-            A_ij = np.linalg.inv(Tj) @ Ti  # 相对机器人运动
+            # A_ij = inv(T_robot_i) @ T_robot_j
+            # Derived from: T_g2b_i·X·T_t2c_i = T_g2b_j·X·T_t2c_j
+            #   → inv(T_g2b_i)·T_g2b_j · X = X · T_t2c_i·inv(T_t2c_j)
+            A_ij = np.linalg.inv(Ti) @ Tj
 
             Bi = build_T(R_target2cam_list[i], t_target2cam_list[i])
             Bj = build_T(R_target2cam_list[j], t_target2cam_list[j])
-            B_ij = Bi @ np.linalg.inv(Bj)  # 相对目标运动
+            # B_ij = T_t2c_i @ inv(T_t2c_j)  — matches the derivation above
+            B_ij = Bi @ np.linalg.inv(Bj)
 
             AX = A_ij @ X
             XB = X @ B_ij
