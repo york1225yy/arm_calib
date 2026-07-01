@@ -34,7 +34,7 @@
 
 输出：
   <data_dir>/hand_eye_result_<mode>.json
-  <data_dir>/hand_eye_T_cam2end_<mode>.npy
+  <data_dir>/verification/verify_XXX.png
 """
 
 import argparse
@@ -297,31 +297,30 @@ def save_verification_images(
         )
         rmse = float(np.sqrt(np.mean(per_pt_err ** 2)))
 
-        # 逐点绘制
-        for pt_det, pt_proj, err_pt in zip(
+        # draw per-point correspondences
+        for pt_det, pt_proj in zip(
             det["corners"].reshape(-1, 2),
             projected.reshape(-1, 2),
-            per_pt_err,
         ):
             pd = tuple(pt_det.astype(int))
             pp = tuple(pt_proj.astype(int))
-            cv2.line(vis, pd, pp, (0, 220, 220), 1, cv2.LINE_AA)   # 黄色连线
-            cv2.circle(vis, pd, 5, (0, 230, 0), -1, cv2.LINE_AA)   # 绿色：检测点
-            cv2.circle(vis, pp, 4, (0, 0, 230), -1, cv2.LINE_AA)   # 红色：重投影点
+            cv2.line(vis, pd, pp, (0, 210, 210), 1, cv2.LINE_AA)   # cyan line
+            cv2.circle(vis, pd, 3, (0, 220, 0), -1, cv2.LINE_AA)   # green: detected
+            cv2.circle(vis, pp, 2, (0, 0, 220), -1, cv2.LINE_AA)   # red: reprojected
 
-        # 添加文字注解
+        # text annotation (ASCII only to avoid encoding issues)
         h = vis.shape[0]
         overlay_lines = [
-            (f"标定图像: {det['image']}",  (10, 32),  (255, 255, 255), 0.75),
-            (f"RMSE: {rmse:.4f} px",          (10, 62),  (0, 230, 230),   0.85),
-            ("● 绿色: 检测角点",             (10, h - 56), (0, 230, 0),   0.70),
-            ("● 红色: 重投影角点",           (10, h - 28), (0, 0, 230),   0.70),
+            (f"Image: {det['image']}",       (10, 32),     (255, 255, 255), 0.65),
+            (f"RMSE: {rmse:.4f} px",         (10, 58),     (0, 220, 220),   0.75),
+            ("[G] detected corners",          (10, h - 50), (0, 220, 0),    0.60),
+            ("[R] reprojected corners",       (10, h - 26), (0, 0, 220),    0.60),
         ]
         for text, pos, color, scale in overlay_lines:
             cv2.putText(vis, text, pos, cv2.FONT_HERSHEY_SIMPLEX,
-                        scale, (0, 0, 0), 4, cv2.LINE_AA)   # 黑色描边
+                        scale, (0, 0, 0), 3, cv2.LINE_AA)   # black outline
             cv2.putText(vis, text, pos, cv2.FONT_HERSHEY_SIMPLEX,
-                        scale, color, 2, cv2.LINE_AA)
+                        scale, color, 1, cv2.LINE_AA)
 
         out_name = det["image"].replace("calib_image_", "verify_")
         out_path = os.path.join(output_dir, out_name)
@@ -622,12 +621,8 @@ def main():
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(result, f, indent=4, ensure_ascii=False)
 
-    npy_path = os.path.join(args.data_dir, f"hand_eye_T_cam2end_{args.mode}.npy")
-    np.save(npy_path, T_result)
-
     print(f"\n结果已保存:")
     print(f"  标定结果 JSON : {json_path}")
-    print(f"  变换矩阵 .npy : {npy_path}")
     print(f"  验证图像目录  : {verify_dir}")
     print(sep)
 
