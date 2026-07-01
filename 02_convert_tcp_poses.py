@@ -20,8 +20,8 @@
                适用：UR 系列机器人
 
 输出：
-  <output_dir>/poses/calib_pose_XXX.npy  —— 4×4 float64 矩阵（平移单位: 米）
-  <output_dir>/poses_summary.json        —— 所有位姿的汇总信息
+  <output_dir>/poses/calib_pose_XXX.json  —— 4×4 矩阵及可读字段（平移单位: 米）
+  <output_dir>/poses_summary.json         —— 所有位姿的汇总信息
 
 用法示例：
   python 02_convert_tcp_poses.py --input tcp_poses.txt
@@ -105,7 +105,7 @@ def matrix_summary(T: np.ndarray) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="TCP 位姿 → 4×4 变换矩阵 (.npy) 转换工具",
+        description="TCP 位姿 → 4×4 变换矩阵 (.json) 转换工具",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--input", default="tcp_poses.txt",
@@ -170,23 +170,22 @@ def main():
         idx = args.start_index + i
         T = tcp_to_matrix(x, y, z, rx, ry, rz, args.rotation_type)
 
-        # 保存 .npy
-        filename = f"calib_pose_{idx:03d}.npy"
+        # 保存 .json（人类可读，VSCode 可直接查看）
+        filename = f"calib_pose_{idx:03d}.json"
         filepath = os.path.join(poses_dir, filename)
-        np.save(filepath, T)
-
-        # 对应图像名（仅用于汇总，便于核对）
-        corresponding_image = f"calib_image_{idx:03d}.png"
-
-        entry = {
+        pose_json = {
             "index": idx,
-            "corresponding_image": corresponding_image,
+            "corresponding_image": f"calib_image_{idx:03d}.png",
             "tcp_input": {
                 "x_mm": x, "y_mm": y, "z_mm": z,
                 "rx_rad": rx, "ry_rad": ry, "rz_rad": rz,
             },
             **matrix_summary(T),
         }
+        with open(filepath, "w", encoding="utf-8") as fj:
+            json.dump(pose_json, fj, indent=4, ensure_ascii=False)
+
+        entry = pose_json.copy()
         summary_entries.append(entry)
 
         euler_str = "[{:.3f}, {:.3f}, {:.3f}] deg".format(
@@ -224,6 +223,11 @@ def main():
             int(f[len("calib_image_"):-len(".png")])
             for f in os.listdir(images_dir)
             if f.startswith("calib_image_") and f.endswith(".png")
+        }
+        saved_poses = {
+            int(f[len("calib_pose_"):-len(".json")])
+            for f in os.listdir(poses_dir)
+            if f.startswith("calib_pose_") and f.endswith(".json")
         }
         pose_indices = set(range(args.start_index, args.start_index + len(poses_raw)))
         missing_imgs = pose_indices - imgs

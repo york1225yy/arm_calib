@@ -255,7 +255,80 @@ def board_stability_error(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 质量评级
+# 检测角点 vs 重投影可视化
+# ──────────────────────────────────────────────────────────────────────────────
+
+def save_verification_images(
+    detections: list[dict],
+    images_dir: str,
+    output_dir: str,
+    camera_matrix: np.ndarray,
+    dist_coeffs: np.ndarray,
+    board_size: tuple[int, int],
+    square_size: float,
+) -> None:
+    """
+    对每张有效图像绘制：
+      绿色实心圆  —— 检测角点
+      红色实心圆  —— 重投影角点（基于 solvePnP 结果）
+      黄色细线    —— 连接对应点对，直观展示误差大小与方向
+
+    保存路径： <output_dir>/verify_XXX.png
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    objp = np.zeros((board_size[0] * board_size[1], 3), dtype=np.float32)
+    objp[:, :2] = np.mgrid[0:board_size[0], 0:board_size[1]].T.reshape(-1, 2)
+    objp *= square_size
+
+    for det in detections:
+        img_path = os.path.join(images_dir, det["image"])
+        vis = cv2.imread(img_path)
+        if vis is None:
+            continue
+
+        projected, _ = cv2.projectPoints(
+            objp, det["rvec"], det["tvec"], camera_matrix, dist_coeffs
+        )
+
+        per_pt_err = np.sqrt(
+            np.sum((det["corners"].reshape(-1, 2)
+                    - projected.reshape(-1, 2)) ** 2, axis=1)
+        )
+        rmse = float(np.sqrt(np.mean(per_pt_err ** 2)))
+
+        # 逐点绘制
+        for pt_det, pt_proj, err_pt in zip(
+            det["corners"].reshape(-1, 2),
+            projected.reshape(-1, 2),
+            per_pt_err,
+        ):
+            pd = tuple(pt_det.astype(int))
+            pp = tuple(pt_proj.astype(int))
+            cv2.line(vis, pd, pp, (0, 220, 220), 1, cv2.LINE_AA)   # 黄色连线
+            cv2.circle(vis, pd, 5, (0, 230, 0), -1, cv2.LINE_AA)   # 绿色：检测点
+            cv2.circle(vis, pp, 4, (0, 0, 230), -1, cv2.LINE_AA)   # 红色：重投影点
+
+        # 添加文字注解
+        h = vis.shape[0]
+        overlay_lines = [
+            (f"标定图像: {det['image']}",  (10, 32),  (255, 255, 255), 0.75),
+            (f"RMSE: {rmse:.4f} px",          (10, 62),  (0, 230, 230),   0.85),
+            ("● 绿色: 检测角点",             (10, h - 56), (0, 230, 0),   0.70),
+            ("● 红色: 重投影角点",           (10, h - 28), (0, 0, 230),   0.70),
+        ]
+        for text, pos, color, scale in overlay_lines:
+            cv2.putText(vis, text, pos, cv2.FONT_HERSHEY_SIMPLEX,
+                        scale, (0, 0, 0), 4, cv2.LINE_AA)   # 黑色描边
+            cv2.putText(vis, text, pos, cv2.FONT_HERSHEY_SIMPLEX,
+                        scale, color, 2, cv2.LINE_AA)
+
+        out_name = det["image"].replace("calib_image_", "verify_")
+        out_path = os.path.join(output_dir, out_name)
+        cv2.imwrite(out_path, vis)
+        print(f"  [验证图] {out_path}  RMSE={rmse:.4f} px")
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 
 def quality_grade(reproj_px: float, rot_deg: float, trans_mm: float) -> str:
@@ -357,7 +430,7 @@ def main():
 
     for img_file in image_files:
         idx = int(img_file[len("calib_image_"):-len(".png")])
-        pose_file = f"calib_pose_{idx:03d}.npy"
+        pose_file = f"calib_pose_{idx:03d}.json"
         pose_path = os.path.join(poses_dir, pose_file)
 
         # 检查对应位姿是否存在
@@ -383,8 +456,10 @@ def main():
             skip_count += 1
             continue
 
-        # 加载机器人位姿（gripper → base）
-        T_g2b = np.load(pose_path).astype(np.float64)
+        # 加载机器人位姿（gripper → base）—— 从 JSON 读取
+        with open(pose_path, "r", encoding="utf-8") as pf:
+            pose_data = json.load(pf)
+        T_g2b = np.array(pose_data["matrix_4x4"], dtype=np.float64)
 
         R_g2b = T_g2b[:3, :3]
         t_g2b = T_g2b[:3, 3].reshape(3, 1)
@@ -473,7 +548,14 @@ def main():
 
     grade = quality_grade(reproj_mean, rot_mean, trans_mean)
 
-    # ── 打印结果 ──────────────────────────────────────────────────────────────
+    # ── 保存验证图像 ──────────────────────────────────────────────────────────
+    verify_dir = os.path.join(args.data_dir, "verification")
+    print(f"\n正在生成验证图像...")
+    save_verification_images(
+        detections, images_dir, verify_dir,
+        camera_matrix, dist_coeffs, board_size, args.square_size,
+    )
+
     sep = "=" * 60
     print(f"\n{sep}")
     if args.mode == "eye_in_hand":
@@ -544,8 +626,9 @@ def main():
     np.save(npy_path, T_result)
 
     print(f"\n结果已保存:")
-    print(f"  JSON : {json_path}")
-    print(f"  .npy : {npy_path}")
+    print(f"  标定结果 JSON : {json_path}")
+    print(f"  变换矩阵 .npy : {npy_path}")
+    print(f"  验证图像目录  : {verify_dir}")
     print(sep)
 
 
