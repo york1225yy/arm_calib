@@ -255,7 +255,9 @@ def board_stability_error(
 
     positions = np.array(positions)
     std_mm = float(np.mean(np.std(positions, axis=0)))
-    return std_mm, float("nan")
+    p_mean = positions.mean(axis=0)
+    mean_dist_mm = float(np.mean(np.linalg.norm(positions - p_mean, axis=1)))
+    return std_mm, mean_dist_mm
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -543,7 +545,7 @@ def main():
         R_result, t_result,
     )
 
-    stab_trans_mm, _ = board_stability_error(
+    stab_trans_mm, stab_dist_mm = board_stability_error(
         R_gripper2base_list, t_gripper2base_list,
         R_target2cam_list, t_target2cam_list,
         R_result, t_result, args.mode,
@@ -584,7 +586,8 @@ def main():
     print(f"    平移误差  : {trans_mean:.4f} ± {trans_std:.4f} mm")
     if not np.isnan(stab_trans_mm):
         print(f"\n标定板位置稳定性（眼在手上）:")
-        print(f"    位置标准差: {stab_trans_mm:.4f} mm")
+        print(f"    位置标准差 (各轴std均值): {stab_trans_mm:.4f} mm")
+        print(f"    平均定位偏差 mean(||p_i-p_mean||): {stab_dist_mm:.4f} mm")
 
     print(f"\n综合质量等级: {grade}")
     print(f"  {QUALITY_TIPS[grade]}")
@@ -616,6 +619,9 @@ def main():
             "consistency_translation_error_std_mm":  trans_std,
             "board_position_stability_mm": (
                 stab_trans_mm if not np.isnan(stab_trans_mm) else None
+            ),
+            "board_position_mean_dist_mm": (
+                stab_dist_mm if not np.isnan(stab_trans_mm) else None
             ),
             "quality_grade": grade,
         },
