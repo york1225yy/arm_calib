@@ -19,7 +19,7 @@
     <default class="d435i">
       <material specular="0" shininess="0.25"/>
       <default class="d435i_visual">
-        <geom group="2" type="mesh" contype="0" conaffinity="0" mass="0"/>
+        <geom group="5" type="mesh" contype="0" conaffinity="0" mass="0"/>
       </default>
       <default class="d435i_collision">
         <geom group="3" type="mesh" mass="0"/>
@@ -58,14 +58,25 @@
   </asset>
 
   <worldbody>
+    <!-- 全局光源：正上方主光 + 侧方补光，保证相机视角不黑屏 -->
+    <light name="top_light"  pos="0 0 2.5" dir="0 0 -1"
+           diffuse="0.9 0.9 0.9" specular="0.3 0.3 0.3" directional="true"/>
+    <light name="side_light" pos="1 1 2.0" dir="-1 -1 -1"
+           diffuse="0.5 0.5 0.5" specular="0.1 0.1 0.1" directional="true"/>
+
+    <!-- 地板：浅灰色，覆盖 4m×4m，厚 5mm -->
+    <geom name="floor" type="plane" size="2 2 0.005"
+          rgba="0.8 0.8 0.8 1" contype="1" conaffinity="1" group="2"/>
+
     <!--
       棋盘格标定板：9×6 内角点 → 10×7 格子，每格 25mm
       整体尺寸：250mm × 175mm，厚度 3mm
-      板中心放在机械臂正前方地面上，便于各方向拍摄
+      板竖立放在机械臂正前方（Y=0.6），高度与相机齐平（Z≈0.85），正面朝向相机（-Y方向）
+      quat="0.7071 0.7071 0 0" 表示绕 X 轴旋转 90°，使板面竖立朝向 -Y
       黑色格子：rgba="0.05 0.05 0.05 1"
       白色格子：rgba="0.95 0.95 0.95 1"
     -->
-    <body name="chessboard" pos="0.0 0.5 0.09">
+    <body name="chessboard" pos="0.0 0.65 0.85" quat="0.7071 0.7071 0 0">
       <!-- 底板（白色背景） -->
       <geom type="box" size="0.135 0.095 0.003"
             rgba="0.95 0.95 0.95 1" contype="0" conaffinity="0" group="2"/>
@@ -148,7 +159,7 @@
       <geom type="box" pos=" 0.1125  0.0750 0.003" size="0.0125 0.0125 0.001" rgba="0.95 0.95 0.95 1" contype="0" conaffinity="0" group="2"/>
     </body>
 
-    <body name="base_link" pos="-0.5 0.0 0.42">
+    <body name="base_link" pos="0.0 -0.5 0.42">
       <inertial pos="-0.000648 -0.000166 0.084487" quat="0.999294 0.00139618 -0.0118387 0.035636" mass="1.697"
         diaginertia="0.00462407 0.00449437 0.00207755"/>
       <geom class="visual" mesh="base_link"/>
