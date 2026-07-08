@@ -282,22 +282,23 @@ def _run_interactive(model, data, renderer, images_dir, poses_dir):
                 pano_cam.distance = min(pano_cam.distance * 1.1, 10.0)
 
     def render_frame():
-        # 相机视角
+        # 相机视角（纯净帧，用于保存）
         renderer.update_scene(data, camera=CAMERA_NAME, scene_option=cam_opt)
-        bgr_cam = cv2.cvtColor(renderer.render(), cv2.COLOR_RGB2BGR)
+        bgr_cam_clean = cv2.cvtColor(renderer.render(), cv2.COLOR_RGB2BGR)
 
         # 全景视角
         renderer_pano.update_scene(data, camera=pano_cam)
         bgr_pano = cv2.cvtColor(renderer_pano.render(), cv2.COLOR_RGB2BGR)
 
-        # HUD：相机视角
+        # HUD 叠加在显示副本上（不污染保存的原图）
+        bgr_cam_display = bgr_cam_clean.copy()
         lines_cam = [
             f"[Camera]  Saved: {saved_count}",
             f"Joint {selected_joint+1} selected  step={step:.3f}rad",
             "SPACE:save  R:reset  Q:quit",
         ]
         for i, txt in enumerate(lines_cam):
-            cv2.putText(bgr_cam, txt, (8, 24 + i*22),
+            cv2.putText(bgr_cam_display, txt, (8, 24 + i*22),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55,
                         (0, 220, 0) if i < 2 else (0, 200, 200), 1)
 
@@ -311,7 +312,7 @@ def _run_interactive(model, data, renderer, images_dir, poses_dir):
             cv2.putText(bgr_pano, txt, (8, 45 + ji * 22),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.50, color, 1)
 
-        return np.hstack([bgr_cam, bgr_pano]), bgr_cam
+        return np.hstack([bgr_cam_display, bgr_pano]), bgr_cam_clean
 
     cv2.namedWindow(WIN_NAME)
     cv2.setMouseCallback(WIN_NAME, _on_mouse)
