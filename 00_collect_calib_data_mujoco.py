@@ -66,7 +66,9 @@ def get_camera_intrinsics(model, cam_name, width, height):
         raise ValueError(f"找不到相机: {cam_name}")
     fovy_rad = model.cam_fovy[cam_id] * math.pi / 180.0
     fy = (height / 2.0) / math.tan(fovy_rad / 2.0)
-    fx = fy * (width / height)
+    # MuJoCo 使用 square pixels：水平 FOV 由宽高比自动推导，fx == fy
+    # 错误写法：fx = fy * (width / height)  ← 会把 fx 虚增 33%，导致 solvePnP 严重偏差
+    fx = fy
     return {
         "camera_matrix": [[fx, 0.0, width/2.0],
                           [0.0, fy, height/2.0],
