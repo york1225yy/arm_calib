@@ -47,6 +47,10 @@ import numpy as np
 #    2. 本文件所在目录的上一级（standalone/ 放在项目内时）
 #    3. 本文件所在目录本身（直接复制到项目根时）
 # ─────────────────────────────────────────────
+# 若未手动设置环境变量，则使用此默认路径（不会覆盖已有的环境变量）
+os.environ.setdefault("FOUNDATIONPOSE_ROOT", "/home/byd/ws/foundationpose")
+
+
 def _find_fp_root() -> str:
     env = os.environ.get("FOUNDATIONPOSE_ROOT", "")
     if env and os.path.isfile(os.path.join(env, "estimater.py")):
@@ -503,6 +507,18 @@ def main():
         help="将可视化结果保存为 output_dir/result.mp4",
     )
     parser.add_argument(
+        "--save_vis", action="store_true",
+        help="将每一帧的可视化图片保存至 output_dir/vis/*.png",
+    )
+    parser.add_argument(
+        "--save_pose", dest="save_pose", action="store_true", default=True,
+        help="将每一帧的姿态矩阵保存至 output_dir/poses/*.txt（默认开启）",
+    )
+    parser.add_argument(
+        "--no_save_pose", dest="save_pose", action="store_false",
+        help="不保存姿态矩阵",
+    )
+    parser.add_argument(
         "--show", action="store_true",
         help="运行时弹出窗口实时显示可视化结果（需要有显示器）",
     )
@@ -571,7 +587,11 @@ def main():
 
     # ── 主循环 ──
     pose_dir = os.path.join(args.output_dir, "poses")
-    os.makedirs(pose_dir, exist_ok=True)
+    vis_dir = os.path.join(args.output_dir, "vis")
+    if args.save_pose:
+        os.makedirs(pose_dir, exist_ok=True)
+    if args.save_vis:
+        os.makedirs(vis_dir, exist_ok=True)
 
     frame_idx = 0
     initialized = False
@@ -623,13 +643,21 @@ def main():
 
         if initialized:
             # 保存姿态
-            np.savetxt(
-                os.path.join(pose_dir, f"{frame_idx:06d}.txt"),
-                pose.reshape(4, 4),
-            )
+            if args.save_pose:
+                np.savetxt(
+                    os.path.join(pose_dir, f"{frame_idx:06d}.txt"),
+                    pose.reshape(4, 4),
+                )
 
             # 可视化
             vis_bgr = tracker.visualize(cur_rgb, pose)
+
+            # 保存可视化图片
+            if args.save_vis:
+                cv2.imwrite(
+                    os.path.join(vis_dir, f"{frame_idx:06d}.png"),
+                    vis_bgr,
+                )
 
             if show_gui:
                 cv2.imshow("FoundationPose", vis_bgr)
@@ -662,7 +690,12 @@ def main():
         writer.release()
     if show_gui:
         cv2.destroyAllWindows()
-    print(f"[信息] 共处理 {frame_idx} 帧，姿态矩阵已保存至 {pose_dir}/")
+    summary = f"[信息] 共处理 {frame_idx} 帧"
+    if args.save_pose:
+        summary += f"，姿态矩阵已保存至 {pose_dir}/"
+    if args.save_vis:
+        summary += f"，可视化图片已保存至 {vis_dir}/"
+    print(summary)
 
 
 if __name__ == "__main__":
