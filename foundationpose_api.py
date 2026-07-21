@@ -479,6 +479,14 @@ def main():
         help="掩码目录（含 masks/*.png）。提供后跳过 GUI 框选，支持 headless 运行。",
     )
     parser.add_argument(
+        "--reinit_each_frame", action="store_true",
+        help=(
+            "每一帧都独立重新执行姿态估计（register），而不是依赖上一帧的跟踪结果（track）。\n"
+            "仅在该帧存在有效掩码文件时生效；关闭（默认）或该帧无掩码时，仍使用 track() 跟踪。\n"
+            "适用于离散关键帧（帧间运动跳变较大，如键盘控制机械臂逐帧采集）的场景。"
+        ),
+    )
+    parser.add_argument(
         "--cam_K_file", default=None,
         help="相机内参文件（3x3 矩阵，空格分隔）。优先级高于 --K。",
     )
@@ -564,6 +572,10 @@ def main():
     # --show 强制开启显示；无掩码文件时默认开启（需要 GUI 框选）
     show_gui = args.show or (not use_mask_files)
 
+    if args.reinit_each_frame and not use_mask_files:
+        print("[警告] --reinit_each_frame 需要每帧掩码文件（--mask_dir 或 input/masks/），"
+              "当前未检测到掩码，将退化为普通跟踪模式。")
+
     # ── 初始化 Tracker ──
     tracker = FoundationPoseTracker(
         mesh_file=args.mesh,
@@ -607,6 +619,21 @@ def main():
         else:
             print("\n[Headless 模式] 使用掩码文件自动初始化，无需 GUI。\n")
 
+    if args.reinit_each_frame and use_mask_files:
+        print("[信息] --reinit_each_frame 已开启：每一帧只要存在有效掩码文件，"
+              "都会独立重新执行姿态估计（register），不依赖上一帧的跟踪结果；"
+              "无对应掩码的帧仍会退回 track() 跟踪。\n")
+
+    def _load_mask_for_frame(idx):
+        """尝试为指定帧号加载掩码文件，找不到 / 无效则返回 None。"""
+        if not use_mask_files or idx >= len(mask_files):
+            return None
+        m = cv2.imread(mask_files[idx], cv2.IMREAD_GRAYSCALE)
+        if m is None or m.max() == 0:
+            return None
+        _, m = cv2.threshold(m, 127, 255, cv2.THRESH_BINARY)
+        return m
+
     # 第一帧直接用已读取的帧
     cur_rgb, cur_depth = rgb0, depth0
 
@@ -617,15 +644,8 @@ def main():
 
         if not initialized:
             # 获取掩码
-            if use_mask_files and frame_idx < len(mask_files):
-                mask = cv2.imread(mask_files[frame_idx], cv2.IMREAD_GRAYSCALE)
-                if mask is not None and mask.max() > 0:
-                    # 确保二值化
-                    _, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
-                else:
-                    mask = None
-            elif use_mask_files:
-                mask = None
+            if use_mask_files:
+                mask = _load_mask_for_frame(frame_idx)
             else:
                 mask = select_mask_by_roi(cur_rgb)
 
@@ -638,8 +658,14 @@ def main():
                 print(f"[信息] 姿态估计耗时 {time.time()-t0:.2f}s")
                 initialized = True
         else:
-            # 跟踪
-            pose = tracker.track(cur_rgb, cur_depth)
+            # 已初始化：默认继续跟踪（track）。若开启 --reinit_each_frame 且当前帧
+            # 存在有效掩码文件，则改为对该帧独立重新执行姿态估计（register），
+            # 不依赖上一帧的跟踪结果；否则（开关关闭，或该帧没有掩码）仍走 track()。
+            reinit_mask = _load_mask_for_frame(frame_idx) if args.reinit_each_frame else None
+            if reinit_mask is not None:
+                pose = tracker.initialize(cur_rgb, reinit_mask, cur_depth)
+            else:
+                pose = tracker.track(cur_rgb, cur_depth)
 
         if initialized:
             # 保存姿态
