@@ -448,6 +448,189 @@ class FoundationPoseTracker:
 
 
 # ─────────────────────────────────────────────
+#  独立功能 API：6DoF 位姿估计
+#  （供其他脚本 / 模块直接 import 调用，无需关心 CLI 参数）
+#  功能与 FoundationPoseTracker（原 CLI 主循环使用的类）完全一致：
+#    - estimate() ≙ 原 initialize()：首帧 / 需要重新初始化时调用，依赖 mask，
+#      内部走 register 流程（旋转假设采样 + 迭代精化 + 打分选优），较慢但准。
+#    - track()    ≙ 原 track()     ：后续帧调用，不需要 mask，依赖上一帧姿态
+#      做增量跟踪（track_one），更快，适合摄像头/视频的连续帧场景。
+# ─────────────────────────────────────────────
+class PoseEstimatorAPI:
+    """
+    6DoF 位姿估计的简洁封装，供其他功能模块直接调用，功能与原
+    FoundationPoseTracker 完全一致（对摄像头/视频连续帧同样适用）。
+
+    典型用法（针对摄像头/视频连续帧）
+    ----
+        import numpy as np
+        from foundationpose_api import PoseEstimatorAPI
+
+        K = np.loadtxt("pose_estimation_data/cam_K.txt").reshape(3, 3)
+        estimator = PoseEstimatorAPI(mesh_file="nut_mesh/textured.obj", K=K)
+
+        # 第一帧（或需要重新初始化时）：提供 mask，执行完整估计
+        pose_4x4 = estimator.estimate(rgb=rgb_img, mask=mask_img, depth=depth_img)
+
+        # 后续帧：不需要 mask，基于上一帧姿态做增量跟踪，速度更快
+        while ...:
+            pose_4x4 = estimator.track(rgb=rgb_img, depth=depth_img)
+
+        # pose_4x4: np.ndarray, shape (4, 4), float64
+        #   物体坐标系 -> 相机坐标系（OpenCV 约定：+X右 +Y下 +Z前）的齐次变换矩阵
+
+    单帧独立估计（不做连续跟踪）的用法
+    ----
+        pose_4x4 = estimator.estimate(rgb=rgb_img, mask=mask_img, depth=depth_img, reinit=True)
+        # reinit=True（默认）：调用前先清空历史跟踪状态，保证与之前的调用互不影响
+    """
+
+    def __init__(
+        self,
+        mesh_file: str,
+        K: np.ndarray,
+        weights_dir: str = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "weights"
+        ),
+        est_refine_iter: int = 5,
+        track_refine_iter: int = 2,
+        debug: int = 0,
+        debug_dir: str = "output",
+    ):
+        """
+        参数
+        ----
+        mesh_file : str
+            目标物体 CAD 网格路径（.obj/.ply/.stl 等 trimesh 支持的格式）
+        K : np.ndarray (3, 3)
+            相机内参矩阵
+        weights_dir : str
+            预训练权重目录（默认：本文件同级的 weights/）
+        est_refine_iter : int
+            estimate() 的精化迭代次数（越大越准但越慢，默认 5）
+        track_refine_iter : int
+            track() 的精化迭代次数（默认 2，跟踪阶段通常帧间运动小，迭代次数可以更少）
+        debug : int
+            调试级别（0=关闭，1=显示，2=保存中间文件）
+        debug_dir : str
+            调试结果保存目录
+        """
+        self._tracker = FoundationPoseTracker(
+            mesh_file=mesh_file,
+            weights_dir=weights_dir,
+            K=K,
+            est_refine_iter=est_refine_iter,
+            track_refine_iter=track_refine_iter,
+            debug=debug,
+            debug_dir=debug_dir,
+        )
+
+    @property
+    def is_initialized(self) -> bool:
+        """是否已经完成过至少一次 estimate()，可以开始调用 track()。"""
+        return self._tracker._pose is not None
+
+    def estimate(
+        self,
+        rgb: np.ndarray,
+        mask: np.ndarray,
+        depth: np.ndarray | None = None,
+        reinit: bool = True,
+    ) -> np.ndarray:
+        """
+        执行一次完整的姿态估计（对应原 FoundationPoseTracker.initialize()）。
+
+        用于：视频/摄像头的第一帧初始化，或跟踪丢失/需要重新初始化时调用。
+
+        参数
+        ----
+        rgb   : uint8, (H, W, 3)
+            RGB 通道顺序（非 BGR）
+        mask  : uint8 / bool, (H, W)
+            目标物体二值掩码（>0 或 True 表示目标区域）
+        depth : float32, (H, W)，单位：米，可选
+            不提供时使用假设深度（旋转估计仍有效，但 z 方向平移不准确）
+        reinit : bool
+            True（默认）：调用前先清空内部跟踪状态，保证本次是与历史完全无关的
+            独立估计，适合单帧场景反复调用。
+            False：不清空，估计结果会正常更新跟踪状态，可紧接着调用 track()
+            继续对后续帧做增量跟踪（等价于原代码里首帧调用 initialize()）。
+
+        返回
+        ----
+        pose : np.ndarray, float64, (4, 4)
+            物体坐标系 -> 相机坐标系 的齐次变换矩阵
+        """
+        if reinit:
+            self._tracker.reset()
+        return self._tracker.initialize(rgb=rgb, mask=mask, depth=depth)
+
+    def track(
+        self,
+        rgb: np.ndarray,
+        depth: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """
+        对后续帧执行增量跟踪（对应原 FoundationPoseTracker.track()）。
+
+        不需要 mask，复用上一帧姿态作为起点做精化，速度比 estimate() 快，
+        适合摄像头/视频连续帧场景。调用前必须已通过 estimate() 完成过一次
+        初始化，否则会抛出 RuntimeError。
+
+        参数
+        ----
+        rgb   : uint8, (H, W, 3)
+        depth : float32, (H, W)，单位：米，可选
+
+        返回
+        ----
+        pose : np.ndarray, float64, (4, 4)
+        """
+        return self._tracker.track(rgb=rgb, depth=depth)
+
+    def reset(self) -> None:
+        """清空跟踪状态。下一次 estimate() 会视为全新的独立估计。"""
+        self._tracker.reset()
+
+    def visualize(self, rgb: np.ndarray, pose: np.ndarray) -> np.ndarray:
+        """在图像上绘制 3D 包围框与坐标轴，返回 BGR 图像，便于调试可视化。"""
+        return self._tracker.visualize(rgb, pose)
+
+
+def estimate_6dof_pose(
+    mesh_file: str,
+    rgb: np.ndarray,
+    mask: np.ndarray,
+    K: np.ndarray,
+    depth: np.ndarray | None = None,
+    weights_dir: str = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "weights"
+    ),
+    est_refine_iter: int = 5,
+    debug: int = 0,
+    debug_dir: str = "output",
+) -> np.ndarray:
+    """
+    单次调用的便捷函数版本（内部临时创建 PoseEstimatorAPI 并调用一次）。
+
+    注意：权重和网格加载本身较慢（秒级），如果调用方需要连续/多次估计，
+    请直接使用 PoseEstimatorAPI 类并复用同一个实例，避免每次调用都重新加载。
+
+    参数、返回值同 PoseEstimatorAPI.estimate()，额外增加 mesh_file/weights_dir/
+    est_refine_iter/debug/debug_dir 用于一次性构造 Tracker。
+    """
+    estimator = PoseEstimatorAPI(
+        mesh_file=mesh_file,
+        K=K,
+        weights_dir=weights_dir,
+        est_refine_iter=est_refine_iter,
+        debug=debug,
+        debug_dir=debug_dir,
+    )
+    return estimator.estimate(rgb=rgb, mask=mask, depth=depth)
+
+
+# ─────────────────────────────────────────────
 #  命令行入口
 # ─────────────────────────────────────────────
 def main():
