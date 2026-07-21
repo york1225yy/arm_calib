@@ -213,6 +213,10 @@ def main():
     print(f"[加载模型] {args.xml}")
     model = mujoco.MjModel.from_xml_path(args.xml)
     data = mujoco.MjData(model)
+    # MjData 刚创建时 xpos/xmat 均为 0（尚未做过正向运动学），
+    # 必须先跑一次 mj_forward 填充有效的世界位姿，否则后续
+    # compute_T_cam_gripper 里读到的 body 位姿是全零矩阵（奇异矩阵）。
+    mujoco.mj_forward(model, data)
 
     print(f"[加载数据] frame_idx={args.frame_idx} @ {args.data_dir}")
     rgb, depth, mask, gt = load_frame_inputs(args.data_dir, args.frame_idx)
