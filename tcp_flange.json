@@ -1,0 +1,12 @@
+{
+  "description": "TCP（工具中心点，通常取 Robotiq 2F-85 两指闭合中心）相对末端法兰 bracelet_link 的固定变换 T_tcp_flange：p_flange = T_tcp_flange @ p_tcp。示例中为单位阵，即假设 TCP 与法兰重合（尚未做实际 TCP 标定/未知夹爪安装偏移时的占位值）。真实使用 Robotiq 2F-85 时，应把夹爪 CAD 给出的法兰->指尖偏移，或实测 TCP 标定结果，替换下面的矩阵。",
+
+  "gripper": "Robotiq 2F-85",
+
+  "T_tcp_flange": [
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0, 0.0],
+    [0.0, 0.0, 1.0, 0.0],
+    [0.0, 0.0, 0.0, 1.0]
+  ]
+}
