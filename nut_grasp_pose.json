@@ -1,0 +1,32 @@
+{
+  "description": "方形螺母（square_nut）预设 6-DoF 抓取位姿：Robotiq 2F-85 夹爪 TCP 相对螺母局部坐标系的固定抓取变换。该局部坐标系与 nut_mesh/textured_simple.obj 网格坐标系、以及 gen3_with_nut.xml 中 body \"square_nut\" 的坐标系严格对齐（见 06_convert_nut_mesh_for_foundationpose.py 的说明），因此本文件与螺母的实际世界位姿无关，可直接与任意一次 6D 位姿估计结果（T_nut_cam / T_nut_base）复合使用。",
+
+  "object": "square_nut",
+
+  "grasp_target": {
+    "part": "nut_handle（螺母把手，即 XML 中 pos=[0.054, 0, 0] 的凸出把手部分）",
+    "reference_site": "与 gen3_with_nut.xml 中已有的 site \"nut_handle_site\"（pos=[0.054, 0, 0]）位置一致",
+    "handle_full_size_m": {"x_length": 0.0505, "y_width": 0.03175, "z_thickness": 0.02},
+    "note": "把手在局部 Z 轴方向最薄（20 mm），整个螺母本体也是沿局部 Z 轴方向的薄片（通孔沿 Z 轴），因此选择沿局部 Z 轴俯冲接近、在水平面内夹持把手，可避免与螺母主体方形环发生干涉。"
+  },
+
+  "gripper": {
+    "model": "Robotiq 2F-85",
+    "max_stroke_m": 0.085,
+    "planned_grasp_opening_m": 0.03175,
+    "note": "沿螺母局部 Y 轴闭合两指（把手宽度方向，31.75 mm），远小于 2F-85 最大开口 85 mm，抓取裕量充足；闭合位置位于把手中心，距螺母主体方形环（约在局部 X<0.03 区域）有足够间隙，闭合过程不会与主体碰撞。"
+  },
+
+  "tcp_frame_convention": {
+    "x_axis": "夹爪闭合方向（两指连线方向）→ 对应螺母局部 +Y 轴（把手宽度方向）",
+    "y_axis": "夹爪平面内的自由方向（物体在此方向可稍有伸出，不受限）→ 对应螺母局部 +X 轴（把手长度方向）",
+    "z_axis": "夹爪接近方向（TCP 沿 +Z 移动靠近并包裹目标）→ 对应螺母局部 -Z 轴（从螺母局部 +Z 一侧俯冲向下接近把手）"
+  },
+
+  "T_grasp_nut": [
+    [0.0, 1.0, 0.0, 0.054],
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 0.0, -1.0, 0.0],
+    [0.0, 0.0, 0.0, 1.0]
+  ]
+}

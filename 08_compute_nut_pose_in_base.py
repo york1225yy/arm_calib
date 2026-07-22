@@ -37,11 +37,18 @@
 最终 T_nut_base 与仿真真值 T_nut_base_gt = inv(T_base_world) @ T_nut_world
 做平移（mm）/旋转（度）误差对比。
 
+在此基础上，进一步读取预设抓取位姿文件（nut_grasp_pose.json，Robotiq 2F-85
+夹爪 TCP 相对螺母局部坐标系的固定抓取变换 T_grasp_nut），计算夹爪最终应到达
+的抓取位姿（机械臂基坐标系下）：
+
+    T_grasp_base = T_nut_base @ T_grasp_nut
+
 用法
 ----
   python 08_compute_nut_pose_in_base.py \\
       --mesh nut_mesh/textured_simple.obj \\
       --data_dir pose_estimation_data --frame_idx 0 \\
+      --grasp_pose_file nut_grasp_pose.json \\
       --save_result output/nut_pose_in_base_000000.json
 """
 
@@ -155,6 +162,13 @@ def compute_T_nut_base_gt(model, data, joint_angles_rad, nut_pose_world_4x4):
 # 数据加载
 # ─────────────────────────────────────────────────────────────────────────────
 
+def load_grasp_pose(grasp_pose_file):
+    """加载预设抓取位姿文件，返回 T_grasp_nut（夹爪 TCP 相对目标物体局部坐标系）。"""
+    with open(grasp_pose_file, encoding="utf-8") as f:
+        grasp = json.load(f)
+    return np.array(grasp["T_grasp_nut"])
+
+
 def load_frame_inputs(data_dir, frame_idx):
     """加载指定帧的 rgb / depth / mask / 真值 json。"""
     name = f"frame_{frame_idx:06d}"
@@ -203,6 +217,8 @@ def main():
                         help="相机内参文件路径，默认取 <data_dir>/cam_K.txt")
     parser.add_argument("--frame_idx", type=int, default=0)
     parser.add_argument("--est_refine_iter", type=int, default=5)
+    parser.add_argument("--grasp_pose_file", default=os.path.join(here, "nut_grasp_pose.json"),
+                        help="预设抓取位姿文件（T_grasp_nut：夹爪 TCP 相对螺母局部坐标系）")
     parser.add_argument("--save_result", default=None,
                         help="将结果保存为 json（如 output/nut_pose_in_base_000000.json）")
     args = parser.parse_args()
@@ -254,6 +270,10 @@ def main():
         model, data, joint_angles_rad, gt["nut_pose_world_4x4"]
     )
 
+    # ── 4) 结合预设抓取位姿：夹爪最终应到达的抓取位姿（基坐标系下）──
+    T_grasp_nut = load_grasp_pose(args.grasp_pose_file)
+    T_grasp_base_est = T_nut_base_est @ T_grasp_nut
+
     R_est, t_est = T_nut_base_est[:3, :3], T_nut_base_est[:3, 3]
     R_gt, t_gt = T_nut_base_gt[:3, :3], T_nut_base_gt[:3, 3]
     trans_err_mm = float(np.linalg.norm(t_est - t_gt) * 1000)
@@ -275,6 +295,10 @@ def main():
     print_T(T_nut_base_gt)
     print(f"\n  平移误差 ||Δt|| = {trans_err_mm:.4f} mm")
     print(f"  旋转误差 angle  = {rot_err_deg:.4f} °")
+    print(f"\n[T_grasp_nut    夹爪 TCP -> 螺母（预设抓取位姿，来自 {os.path.basename(args.grasp_pose_file)}）]")
+    print_T(T_grasp_nut)
+    print("\n[T_grasp_base_est 夹爪 TCP -> 基座（最终抓取目标位姿，机械臂可直接使用）]")
+    print_T(T_grasp_base_est)
     print(sep)
 
     if args.save_result:
@@ -288,6 +312,8 @@ def main():
             "T_nut_base_gt": T_nut_base_gt.tolist(),
             "translation_error_mm": trans_err_mm,
             "rotation_error_deg": rot_err_deg,
+            "T_grasp_nut": T_grasp_nut.tolist(),
+            "T_grasp_base_est": T_grasp_base_est.tolist(),
         }
         with open(args.save_result, "w", encoding="utf-8") as f:
             json.dump(result, f, indent=2, ensure_ascii=False)
