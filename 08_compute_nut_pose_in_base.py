@@ -43,12 +43,29 @@
 
     T_grasp_base = T_nut_base @ T_grasp_nut
 
+重要说明（T_grasp_base 与真实机械臂 TCP 的关系）
+----
+T_grasp_base 描述的是“nut_grasp_pose.json 里设计的抓取坐标系”在基坐标系下
+应该到达的位姿，它默认假设这个抓取坐标系与机械臂控制器实际配置的 TCP（工具
+坐标系）完全重合。但真实场景中，Robotiq 2F-85 的 TCP（通常取两指闭合中心，
+相对末端法兰 bracelet_link 有一个固定的安装偏移）需要另外通过夹爪 CAD 尺寸
+或实际 TCP 标定得到，这个偏移记为：
+
+    T_tcp_flange   （TCP 相对末端法兰 bracelet_link 的固定变换）
+
+本脚本把它做成一个可选参数：不提供时默认为单位阵（即假设 T_grasp_base 已经
+就是 TCP 目标位姿，不需要额外换算，对应本仓库当前尚未做 TCP 标定的情况）；
+提供 --tcp_flange_file 后，会额外算出机械臂法兰应到达的目标位姿：
+
+    T_flange_base = T_grasp_base @ inv(T_tcp_flange)
+
 用法
 ----
   python 08_compute_nut_pose_in_base.py \\
       --mesh nut_mesh/textured_simple.obj \\
       --data_dir pose_estimation_data --frame_idx 0 \\
       --grasp_pose_file nut_grasp_pose.json \\
+      --tcp_flange_file tcp_flange.json \\
       --save_result output/nut_pose_in_base_000000.json
 """
 
@@ -169,6 +186,21 @@ def load_grasp_pose(grasp_pose_file):
     return np.array(grasp["T_grasp_nut"])
 
 
+def load_tcp_flange(tcp_flange_file):
+    """加载 TCP 相对末端法兰（bracelet_link）的固定变换 T_tcp_flange。
+
+    未提供文件时返回单位阵，即默认假设 nut_grasp_pose.json 里设计的抓取坐标系
+    本身就等同于机械臂控制器配置的 TCP（尚未做实际 TCP 标定/未知夹爪安装偏移
+    时的保守假设）。真实使用 Robotiq 2F-85 时，应把夹爪 CAD 给出的法兰->指尖
+    偏移，或实测 TCP 标定结果，填入该文件的 "T_tcp_flange" 字段。
+    """
+    if tcp_flange_file is None or not os.path.isfile(tcp_flange_file):
+        return np.eye(4)
+    with open(tcp_flange_file, encoding="utf-8") as f:
+        tcp = json.load(f)
+    return np.array(tcp["T_tcp_flange"])
+
+
 def load_frame_inputs(data_dir, frame_idx):
     """加载指定帧的 rgb / depth / mask / 真值 json。"""
     name = f"frame_{frame_idx:06d}"
@@ -219,6 +251,9 @@ def main():
     parser.add_argument("--est_refine_iter", type=int, default=5)
     parser.add_argument("--grasp_pose_file", default=os.path.join(here, "nut_grasp_pose.json"),
                         help="预设抓取位姿文件（T_grasp_nut：夹爪 TCP 相对螺母局部坐标系）")
+    parser.add_argument("--tcp_flange_file", default=None,
+                        help="可选：TCP 相对末端法兰的标定/CAD 文件（字段 T_tcp_flange）。"
+                             "不提供则默认单位阵，即假设抓取坐标系本身就是 TCP。")
     parser.add_argument("--save_result", default=None,
                         help="将结果保存为 json（如 output/nut_pose_in_base_000000.json）")
     args = parser.parse_args()
@@ -274,6 +309,11 @@ def main():
     T_grasp_nut = load_grasp_pose(args.grasp_pose_file)
     T_grasp_base_est = T_nut_base_est @ T_grasp_nut
 
+    # ── 5) TCP 相对末端法兰的固定偏移（默认单位阵，可填入真实 CAD/标定值）──
+    #      T_flange_base = T_grasp_base @ inv(T_tcp_flange)：机械臂法兰应到达的目标位姿
+    T_tcp_flange = load_tcp_flange(args.tcp_flange_file)
+    T_flange_base_est = T_grasp_base_est @ np.linalg.inv(T_tcp_flange)
+
     R_est, t_est = T_nut_base_est[:3, :3], T_nut_base_est[:3, 3]
     R_gt, t_gt = T_nut_base_gt[:3, :3], T_nut_base_gt[:3, 3]
     trans_err_mm = float(np.linalg.norm(t_est - t_gt) * 1000)
@@ -297,8 +337,14 @@ def main():
     print(f"  旋转误差 angle  = {rot_err_deg:.4f} °")
     print(f"\n[T_grasp_nut    夹爪 TCP -> 螺母（预设抓取位姿，来自 {os.path.basename(args.grasp_pose_file)}）]")
     print_T(T_grasp_nut)
-    print("\n[T_grasp_base_est 夹爪 TCP -> 基座（最终抓取目标位姿，机械臂可直接使用）]")
+    print("\n[T_grasp_base_est 夹爪 TCP -> 基座（最终抓取目标位姿，假设抓取坐标系即 TCP）]")
     print_T(T_grasp_base_est)
+    tcp_flange_desc = (os.path.basename(args.tcp_flange_file)
+                       if args.tcp_flange_file else "未提供，默认单位阵")
+    print(f"\n[T_tcp_flange   TCP -> 末端法兰（{tcp_flange_desc}）]")
+    print_T(T_tcp_flange)
+    print("\n[T_flange_base_est 末端法兰 -> 基座（真正下发给机械臂控制器的法兰目标位姿）]")
+    print_T(T_flange_base_est)
     print(sep)
 
     if args.save_result:
@@ -314,6 +360,8 @@ def main():
             "rotation_error_deg": rot_err_deg,
             "T_grasp_nut": T_grasp_nut.tolist(),
             "T_grasp_base_est": T_grasp_base_est.tolist(),
+            "T_tcp_flange": T_tcp_flange.tolist(),
+            "T_flange_base_est": T_flange_base_est.tolist(),
         }
         with open(args.save_result, "w", encoding="utf-8") as f:
             json.dump(result, f, indent=2, ensure_ascii=False)
