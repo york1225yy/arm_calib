@@ -1,0 +1,121 @@
+<mujoco model="nut_grasp_visualization">
+  <!--
+  ============================================================================
+  螺母 + 抓取位姿（TCP）相对关系可视化场景
+  ============================================================================
+  用途：
+    独立于完整机械臂场景（gen3_with_nut.xml），单独展示：
+      1) 螺母（square_nut）本体，坐标系与
+         nut_mesh/textured_simple.obj、gen3_with_nut.xml 中 body "square_nut"
+         完全一致；
+      2) 预设抓取位姿 nut_grasp_pose.json 中 T_grasp_nut 描述的夹爪 TCP
+         坐标系相对螺母局部坐标系的位置和朝向（用一个简化的二指夹爪示意
+         几何体 + RGB 坐标轴表示）。
+
+  两个物体都定义为 mocap body（无关节、不参与物理仿真），世界位姿由配套的
+  visualize_nut_grasp_pose.py 脚本在启动时通过 data.mocap_pos/mocap_quat
+  设置一次，之后保持静止，便于自由拖动视角检查相对位姿是否合理。
+
+  坐标轴颜色约定（本文件中所有坐标轴指示器统一）：
+    红色 = 局部 X 轴，绿色 = 局部 Y 轴，蓝色 = 局部 Z 轴
+  -->
+
+  <compiler angle="radian"/>
+
+  <option gravity="0 0 0"/>
+
+  <visual>
+    <headlight ambient="0.4 0.4 0.4" diffuse="0.6 0.6 0.6"/>
+    <global offwidth="1280" offheight="960"/>
+  </visual>
+
+  <asset>
+    <texture name="brass-metal" type="cube" file="textures/brass-ambra.png"/>
+    <material name="bmetal" texture="brass-metal" reflectance="0.3" shininess="0.6"
+              specular="0.5" texrepeat="1 1" texuniform="true"/>
+    <texture name="grid" type="2d" builtin="checker" rgb1="0.2 0.2 0.2" rgb2="0.3 0.3 0.3"
+              width="300" height="300"/>
+    <material name="grid_mat" texture="grid" texrepeat="4 4" reflectance="0.1"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0.3 0.3 0.5" dir="-0.3 -0.3 -0.5" diffuse="0.8 0.8 0.8" specular="0.2 0.2 0.2"/>
+    <light pos="-0.3 -0.2 0.4" dir="0.3 0.2 -0.4" diffuse="0.4 0.4 0.4"/>
+
+    <geom name="ground" type="plane" size="0.3 0.3 0.01" pos="0 0 -0.08" material="grid_mat"/>
+
+    <camera name="iso_view" pos="0.18 -0.22 0.18" xyaxes="0.78 0.63 0 -0.28 0.35 0.89"/>
+    <camera name="top_view" pos="0 0 0.3" xyaxes="1 0 0 0 1 0"/>
+
+    <!--
+    ────────────────────────────────────────────────────────────────
+    螺母本体（与 gen3_with_nut.xml / square-nut.xml 中的方形螺母几何体一致）
+    局部坐标系原点 = 螺母中心，Z 轴沿螺母厚度方向（通孔方向），
+    +X 指向把手凸出方向。
+    ────────────────────────────────────────────────────────────────
+    -->
+    <body name="nut" mocap="true" pos="0 0 0" quat="1 0 0 0">
+      <geom name="nut_side_neg_x" pos="-0.03325 0 0" size="0.0105 0.04375 0.01" type="box"
+            material="bmetal" contype="0" conaffinity="0" group="1"/>
+      <geom name="nut_side_pos_y" pos="0.0 0.03325 0" size="0.03125 0.0105 0.01" type="box"
+            material="bmetal" contype="0" conaffinity="0" group="1"/>
+      <geom name="nut_side_neg_y" pos="0.0 -0.03325 0" size="0.03125 0.0105 0.01" type="box"
+            material="bmetal" contype="0" conaffinity="0" group="1"/>
+      <geom name="nut_side_pos_x" pos="0.03325 0 0" size="0.0105 0.04375 0.01" type="box"
+            material="bmetal" contype="0" conaffinity="0" group="1"/>
+      <geom name="nut_handle" pos="0.054 0 0" size="0.02525 0.015875 0.01" type="box"
+            material="bmetal" contype="0" conaffinity="0" group="1"/>
+
+      <site rgba="1 0 0 1" size="0.004" pos="0 0 0" name="nut_center_site"/>
+      <site rgba="1 0 0 1" size="0.004" pos="0.054 0 0" name="nut_handle_site"/>
+
+      <!-- 螺母局部坐标系坐标轴指示（红=X 绿=Y 蓝=Z），长 3cm，半径 1mm -->
+      <geom type="cylinder" fromto="0 0 0  0.03 0 0" size="0.0015" rgba="1 0 0 1"
+            contype="0" conaffinity="0" group="1"/>
+      <geom type="cylinder" fromto="0 0 0  0 0.03 0" size="0.0015" rgba="0 1 0 1"
+            contype="0" conaffinity="0" group="1"/>
+      <geom type="cylinder" fromto="0 0 0  0 0 0.03" size="0.0015" rgba="0 0 1 1"
+            contype="0" conaffinity="0" group="1"/>
+    </body>
+
+    <!--
+    ────────────────────────────────────────────────────────────────
+    抓取位姿（夹爪 TCP）示意：一个简化的二指夹爪几何体，
+    局部坐标系定义与 nut_grasp_pose.json 中 tcp_frame_convention 一致：
+      局部 +X = 两指闭合方向（对应螺母局部 +Y 轴，闭合开口 31.75mm）
+      局部 +Z = 夹爪接近方向（TCP 从 +Z 一侧俯冲向下接近，
+                对应螺母局部 -Z 轴）
+      → 因此手掌（palm）位于局部 -Z 一侧（沿接近方向的反方向后退），
+        两指沿局部 +Z 方向伸出、在局部 X 方向左右分开。
+    该 body 的世界位姿（pos/quat）由 visualize_nut_grasp_pose.py 在运行时
+    通过 T_grasp_world = T_nut_world @ T_grasp_nut 计算并写入 mocap_pos/quat，
+    此处的 pos/quat 只是编译期占位值。
+    ────────────────────────────────────────────────────────────────
+    -->
+    <body name="grasp_frame" mocap="true" pos="0.054 0 0" quat="1 0 0 0">
+      <!-- TCP 原点标记（黄色小球） -->
+      <geom name="tcp_marker" type="sphere" size="0.004" rgba="1 1 0 1"
+            contype="0" conaffinity="0" group="1"/>
+
+      <!-- 手掌（沿接近方向 -Z 后退 2.5cm 处的薄板） -->
+      <geom name="gripper_palm" type="box" pos="0 0 -0.025" size="0.012 0.022 0.006"
+            rgba="0.55 0.55 0.6 1" contype="0" conaffinity="0" group="1"/>
+
+      <!-- 两根手指：沿局部 X（闭合方向）分开 31.75mm 开口，沿 +Z 伸出 3cm -->
+      <geom name="finger_left" type="box" pos="-0.0159 0 -0.005" size="0.005 0.006 0.02"
+            rgba="0.75 0.75 0.8 1" contype="0" conaffinity="0" group="1"/>
+      <geom name="finger_right" type="box" pos="0.0159 0 -0.005" size="0.005 0.006 0.02"
+            rgba="0.75 0.75 0.8 1" contype="0" conaffinity="0" group="1"/>
+
+      <!-- 抓取（TCP）局部坐标系坐标轴指示（红=X 绿=Y 蓝=Z），长 3cm -->
+      <geom type="cylinder" fromto="0 0 0  0.03 0 0" size="0.0015" rgba="1 0 0 1"
+            contype="0" conaffinity="0" group="1"/>
+      <geom type="cylinder" fromto="0 0 0  0 0.03 0" size="0.0015" rgba="0 1 0 1"
+            contype="0" conaffinity="0" group="1"/>
+      <geom type="cylinder" fromto="0 0 0  0 0 0.03" size="0.0015" rgba="0 0 1 1"
+            contype="0" conaffinity="0" group="1"/>
+
+      <site rgba="1 1 0 1" size="0.003" pos="0 0 0" name="tcp_site"/>
+    </body>
+  </worldbody>
+</mujoco>
