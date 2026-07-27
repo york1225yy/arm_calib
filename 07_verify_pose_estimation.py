@@ -318,7 +318,8 @@ def _run_batch_multi_object(model, data, est_dirs, args):
         print(f"\n{sep}")
         print(f"  目标 '{nut_name}' 批量统计汇总")
         print(sep)
-        print(f"  {'':>10}  {'旋转误差 (\u00b0)':>14}  {'平移误差 (mm)':>16}")
+        deg_label = "旋转误差 (°)"
+        print(f"  {'':>10}  {deg_label:>14}  {'平移误差 (mm)':>16}")
         print(f"  {'均值':>10}  {ra.mean():>14.4f}  {ta.mean():>16.4f}")
         print(f"  {'最大值':>10}  {ra.max():>14.4f}  {ta.max():>16.4f}")
         print(f"  {'标准差':>10}  {ra.std():>14.4f}  {ta.std():>16.4f}")
@@ -349,7 +350,8 @@ def _run_batch_multi_object(model, data, est_dirs, args):
     print(f"\n{sep}")
     print(f"  全部目标合计统计（{len(per_object_summary)} 个目标，共 {len(ra_all)} 组）")
     print(sep)
-    print(f"  {'':>10}  {'旋转误差 (\u00b0)':>14}  {'平移误差 (mm)':>16}")
+    deg_label = "旋转误差 (°)"
+    print(f"  {'':>10}  {deg_label:>14}  {'平移误差 (mm)':>16}")
     print(f"  {'均值':>10}  {ra_all.mean():>14.4f}  {ta_all.mean():>16.4f}")
     print(f"  {'最大值':>10}  {ra_all.max():>14.4f}  {ta_all.max():>16.4f}")
     print(f"  {'标准差':>10}  {ra_all.std():>14.4f}  {ta_all.std():>16.4f}")
