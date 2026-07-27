@@ -8,19 +8,25 @@
 与 00_collect_calib_data_mujoco.py 的区别：
   - 场景默认换成 gen3_with_two_nuts.xml（标定板 → 两个方形螺母
     square_nut / square_nut_2，位置/旋转均不同）。脚本会自动扫描场景中
-    所有以 "square_nut" 开头的 body，因此换回单螺母场景 gen3_with_nut.xml
-    （--xml 指定）时无需修改代码即可兼容。
+    所有以 NUT_BODY_PREFIXES 中任一前缀开头的 body（当前为 "square_nut"
+    和 "round_nut"），因此换成单螺母场景 gen3_with_nut.xml，或换成三物体
+    场景 gen3_with_two_nuts_and_round_nut.xml（另加一个圆形螺母
+    round_nut，对应 06_convert_nut_mesh_for_foundationpose.py 转换出的
+    nut_mesh/round_nut_textured_simple.obj）时，只需通过 --xml 指定对应
+    场景文件，无需修改代码即可兼容。
   - 每一帧除了 RGB，还额外渲染并保存：
       · 深度图（uint16 PNG，单位 mm，与 foundationpose_api.py 的
         FrameSource 读取约定一致：depth = imread(...).astype(float32)/1e3）
-      · 每个螺母各自的二值掩码（uint8 PNG，255=该螺母，0=背景，
-        来自 MuJoCo 分割渲染，按螺母名分别存到 masks/<螺母名>/ 子目录）
+      · 每个目标各自的二值掩码（uint8 PNG，255=该目标，0=背景，
+        来自 MuJoCo 分割渲染，按目标名分别存到 masks/<目标名>/ 子目录）
   - 输出目录结构对齐 foundationpose_api.py 多目标模式期望的输入格式，
     采集完成后可直接：
       python foundationpose_api.py --mesh nut_mesh/textured_simple.obj \\
+          --object_mesh round_nut=nut_mesh/round_nut_textured_simple.obj \\
           --input pose_estimation_data --cam_K_file pose_estimation_data/cam_K.txt
     （foundationpose_api.py 会自动识别 masks/ 下的多个子目录，分别对
-    每个螺母执行姿态估计，并将结果叠加可视化到同一张图上）
+    每个目标执行姿态估计，并将结果叠加可视化到同一张图上；两个方形螺母
+    共用 --mesh 指定的网格，round_nut 通过 --object_mesh 单独指定网格）
 
 两种模式：
   1. 交互模式（默认）：键盘手动控制各关节，看到螺母后按 SPACE 保存
@@ -46,9 +52,10 @@
     rgb/    frame_000000.png ...
     depth/  frame_000000.png ...             （uint16，单位 mm）
     masks/
-      square_nut/   frame_000000.png ...     （uint8，255=该螺母，0=背景）
+      square_nut/   frame_000000.png ...     （uint8，255=该目标，0=背景）
       square_nut_2/ frame_000000.png ...
-    poses/  frame_000000.json ...  （关节角 + 末端位姿 + 所有螺母的世界位姿，供核验用）
+      round_nut/    frame_000000.png ...     （仅 gen3_with_two_nuts_and_round_nut.xml 场景下才会出现）
+    poses/  frame_000000.json ...  （关节角 + 末端位姿 + 所有目标的世界位姿，供核验用）
 """
 
 import argparse
@@ -72,11 +79,15 @@ CAM_HEIGHT  = 480
 JOINT_NAMES = ["joint_1", "joint_2", "joint_3",
                "joint_4", "joint_5", "joint_6", "joint_7"]
 
-# 场景中所有待估计目标物体 body 名称的前缀。脚本会自动扫描 XML 中所有
-# 以此前缀开头的 body（gen3_with_two_nuts.xml 中为 "square_nut" 和
-# "square_nut_2"，gen3_with_nut.xml 中只有 "square_nut"），因此同一份
-# 采集代码可以直接兼容单螺母/双螺母场景，无需手动改名称列表。
-NUT_BODY_PREFIX = "square_nut"
+# 场景中所有待估计目标物体 body 名称的前缀元组，脚本会自动扫描 XML 中
+# 所有以其中任一前缀开头的 body：
+#   "square_nut" → gen3_with_nut.xml 中的 "square_nut"；
+#                  gen3_with_two_nuts.xml 中的 "square_nut"/"square_nut_2"
+#   "round_nut"  → gen3_with_two_nuts_and_round_nut.xml 中新增的圆形螺母
+#                  "round_nut"
+# 因此同一份采集代码可以直接兼容单螺母/双螺母/三物体场景，无需手动改
+# 名称列表；str.startswith() 支持直接传入前缀元组做匹配。
+NUT_BODY_PREFIXES = ("square_nut", "round_nut")
 
 HOME_QPOS = [0.0, 0.2618, 3.1416, -2.2689, 0.0, 0.9599, 1.5708]
 
@@ -123,18 +134,21 @@ def get_gripper2base(model, data):
 
 
 def get_all_nut_body_names(model):
-    """扫描模型中所有以 NUT_BODY_PREFIX 开头的 body 名称（按名称排序）。
+    """扫描模型中所有以 NUT_BODY_PREFIXES 中任一前缀开头的 body 名称
+    （按名称排序）。
 
     gen3_with_two_nuts.xml 中会得到 ["square_nut", "square_nut_2"]；
-    gen3_with_nut.xml 中只会得到 ["square_nut"]。
+    gen3_with_nut.xml 中只会得到 ["square_nut"]；
+    gen3_with_two_nuts_and_round_nut.xml 中会得到
+    ["round_nut", "square_nut", "square_nut_2"]（按字母排序）。
     """
     names = []
     for i in range(model.nbody):
         name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, i)
-        if name and name.startswith(NUT_BODY_PREFIX):
+        if name and name.startswith(NUT_BODY_PREFIXES):
             names.append(name)
     if not names:
-        raise ValueError(f"场景中找不到任何以 '{NUT_BODY_PREFIX}' 开头的 body")
+        raise ValueError(f"场景中找不到任何以 {NUT_BODY_PREFIXES} 开头的 body")
     return sorted(names)
 
 
@@ -253,9 +267,12 @@ def save_frame(rgb_dir, depth_dir, masks_dir, poses_dir, idx,
             "index": idx,
             "joint_angles_rad": qpos_arr.tolist(),
             "gripper2base_4x4": T_g2b.tolist(),
-            # 兼容旧版单螺母脚本（07/08）：第一个螺母（square_nut）的世界位姿
+            # 兼容旧版单/双螺母脚本（07/08）：按名称排序后第一个目标的世界位姿
+            # （单螺母场景固定是 square_nut；三物体场景 round_nut 排序靠前，
+            #  该字段会变成 round_nut，如需固定读取某个目标请改用下面的
+            #  nuts_pose_world_4x4[<目标名>]）
             "nut_pose_world_4x4": T_nuts_wld[nut_names[0]].tolist(),
-            # 新增：全部螺母各自的世界位姿，供多目标位姿估计使用
+            # 新增：全部目标各自的世界位姿，供多目标位姿估计使用
             "nuts_pose_world_4x4": {n: T.tolist() for n, T in T_nuts_wld.items()},
         }, f, indent=4, ensure_ascii=False)
     mask_desc = "  ".join(f"masks/{n}/{name}" for n in masks_u8_by_name)
