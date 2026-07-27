@@ -24,6 +24,17 @@ FoundationPose 单文件调用接口
   # 指定相机内参（fx fy cx cy）
   python foundationpose_api.py --mesh obj.obj --input 0 --K "600 600 320 240"
 
+  # 多目标（同一帧内多个物体，如场景中的两个螺母）：
+  # 掩码目录按目标名分子目录（masks/square_nut/、masks/square_nut_2/，见
+  # 05_collect_pose_estimation_data_mujoco.py 的采集格式）时自动进入多目标模式，
+  # 所有目标默认共用同一个 --mesh，可用 --object_mesh NAME=PATH 单独覆盖：
+  python foundationpose_api.py --mesh nut_mesh/textured_simple.obj \\
+      --input pose_estimation_data --cam_K_file pose_estimation_data/cam_K.txt \\
+      --save_vis
+  # 每个目标的姿态矩阵分别保存至 output/poses/<目标名>/*.txt，
+  # 可视化结果（所有目标叠加在同一张图上）保存至 output/vis/*.png。
+  # 代码中直接调用见 MultiObjectPoseEstimator（本文件内）。
+
 操作说明:
   - 第一帧会弹出窗口，用鼠标拖动框选目标物体，按 Enter/Space 确认
   - 运行时按 q 退出，按 r 重新框选（重新初始化姿态）
@@ -287,7 +298,19 @@ class FoundationPoseTracker:
         assumed_depth: float = 0.5,
         debug: int = 1,
         debug_dir: str = "output",
+        scorer=None,
+        refiner=None,
+        glctx=None,
     ):
+        """
+        scorer / refiner / glctx : 可选，外部已创建好的共享资源（见
+            `FoundationPoseTracker.create_shared_resources`）。用于
+            `MultiObjectPoseEstimator` 在同一进程内同时估计多个目标时，
+            避免每个目标都重复加载一遍权重（ScorePredictor/PoseRefinePredictor）
+            和创建 CUDA 光栅化上下文（RasterizeCudaContext），显著节省显存和
+            初始化耗时。三者要么都不提供（内部各自创建，行为与之前完全一致），
+            要么都提供（生命周期由外部管理）。
+        """
         (
             FoundationPose, ScorePredictor, PoseRefinePredictor,
             set_logging_format, set_seed,
@@ -308,19 +331,28 @@ class FoundationPoseTracker:
         self.debug_dir = debug_dir
         os.makedirs(debug_dir, exist_ok=True)
 
-        # ── 加载权重 ──
-        # 自动寻找 refiner / scorer 子目录
-        if not os.path.isdir(weights_dir):
-            raise FileNotFoundError(f"权重目录不存在: {weights_dir}")
+        shared = scorer is not None or refiner is not None or glctx is not None
+        if shared and not (scorer is not None and refiner is not None and glctx is not None):
+            raise ValueError("scorer/refiner/glctx 要么都提供，要么都不提供。")
 
-        os.environ["FOUNDATIONPOSE_WEIGHTS_DIR"] = weights_dir
+        if shared:
+            self._scorer = scorer
+            self._refiner = refiner
+            self._glctx = glctx
+        else:
+            # ── 加载权重 ──
+            # 自动寻找 refiner / scorer 子目录
+            if not os.path.isdir(weights_dir):
+                raise FileNotFoundError(f"权重目录不存在: {weights_dir}")
 
-        logging.info("正在加载 ScorePredictor …")
-        self._scorer = ScorePredictor()
-        logging.info("正在加载 PoseRefinePredictor …")
-        self._refiner = PoseRefinePredictor()
+            os.environ["FOUNDATIONPOSE_WEIGHTS_DIR"] = weights_dir
 
-        self._glctx = dr.RasterizeCudaContext()
+            logging.info("正在加载 ScorePredictor …")
+            self._scorer = ScorePredictor()
+            logging.info("正在加载 PoseRefinePredictor …")
+            self._refiner = PoseRefinePredictor()
+
+            self._glctx = dr.RasterizeCudaContext()
 
         # ── 加载网格 ──
         logging.info(f"正在加载网格: {mesh_file}")
@@ -343,6 +375,42 @@ class FoundationPoseTracker:
 
         self._pose = None  # 当前姿态（已初始化则非 None）
         logging.info("FoundationPoseTracker 初始化完成")
+
+    # ─────────────────────────────────────────
+    @staticmethod
+    def create_shared_resources(weights_dir: str):
+        """创建可在多个 FoundationPoseTracker 实例间共享的重资源
+        （ScorePredictor / PoseRefinePredictor / RasterizeCudaContext）。
+
+        供 `MultiObjectPoseEstimator` 内部使用：同一帧里的多个目标（如场景中
+        的多个螺母）通常复用同一套权重和 CUDA 上下文，没必要每个目标各自
+        重新加载一遍，可显著节省显存占用和初始化耗时。
+
+        返回
+        ----
+        (scorer, refiner, glctx) 三元组，可直接传给
+        `FoundationPoseTracker(..., scorer=, refiner=, glctx=)`。
+        """
+        (
+            _FoundationPose, ScorePredictor, PoseRefinePredictor,
+            set_logging_format, set_seed,
+            _draw_posed_3d_box, _draw_xyz_axis,
+            _trimesh, dr,
+        ) = _import_fp()
+
+        set_logging_format()
+        set_seed(0)
+
+        if not os.path.isdir(weights_dir):
+            raise FileNotFoundError(f"权重目录不存在: {weights_dir}")
+        os.environ["FOUNDATIONPOSE_WEIGHTS_DIR"] = weights_dir
+
+        logging.info("正在加载共享 ScorePredictor …")
+        scorer = ScorePredictor()
+        logging.info("正在加载共享 PoseRefinePredictor …")
+        refiner = PoseRefinePredictor()
+        glctx = dr.RasterizeCudaContext()
+        return scorer, refiner, glctx
 
     # ─────────────────────────────────────────
     def reset(self):
@@ -631,6 +699,395 @@ def estimate_6dof_pose(
 
 
 # ─────────────────────────────────────────────
+#  多目标位姿估计：同一帧内对场景中的多个目标（如两个螺母）分别估计，
+#  并支持把所有目标的可视化结果叠加输出到同一张图上。
+# ─────────────────────────────────────────────
+class MultiObjectPoseEstimator:
+    """
+    对同一帧图像中的多个目标物体分别做 6D 姿态估计，并支持在同一张图上
+    叠加输出各自的可视化结果（3D 包围框 + 坐标轴 + 名称标签）。
+
+    每个目标物体用一个唯一名称标识（例如 gen3_with_two_nuts.xml 场景里的
+    "square_nut" / "square_nut_2"），内部为每个名称维护独立的姿态/跟踪状态
+    （互不影响），但共享同一份权重（ScorePredictor / PoseRefinePredictor）
+    和 CUDA 光栅化上下文，避免多个目标重复加载权重带来的显存/时间开销。
+
+    典型用法（配合 05_collect_pose_estimation_data_mujoco.py 采集的
+    masks/<物体名>/frame_XXXXXX.png 目录结构）
+    ----
+        import cv2, numpy as np
+        from foundationpose_api import MultiObjectPoseEstimator
+
+        K = np.loadtxt("pose_estimation_data/cam_K.txt").reshape(3, 3)
+        estimator = MultiObjectPoseEstimator(
+            objects={
+                "square_nut":   "nut_mesh/textured_simple.obj",
+                "square_nut_2": "nut_mesh/textured_simple.obj",
+            },
+            K=K,
+        )
+
+        rgb = ...      # (H, W, 3) uint8, RGB 顺序
+        depth = ...    # (H, W) float32, 单位米，可选
+        masks = {
+            "square_nut":   cv2.imread(".../masks/square_nut/frame_000000.png", cv2.IMREAD_GRAYSCALE),
+            "square_nut_2": cv2.imread(".../masks/square_nut_2/frame_000000.png", cv2.IMREAD_GRAYSCALE),
+        }
+
+        poses = estimator.estimate_all(rgb, masks, depth=depth)
+        # poses: dict[str, np.ndarray(4,4)]，每个物体在相机坐标系下的位姿
+
+        vis_bgr = estimator.visualize_all(rgb, poses)
+        cv2.imwrite("output/vis/000000.png", vis_bgr)
+    """
+
+    def __init__(
+        self,
+        objects: dict[str, str],
+        K: np.ndarray,
+        weights_dir: str = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "weights"
+        ),
+        est_refine_iter: int = 5,
+        track_refine_iter: int = 2,
+        debug: int = 0,
+        debug_dir: str = "output",
+    ):
+        """
+        参数
+        ----
+        objects : dict[str, str]
+            {目标名: mesh 文件路径}。多个目标名可以指向同一个 mesh 文件
+            （如场景中两个外形相同、姿态不同的螺母），mesh 会各自独立加载
+            一份（trimesh 加载本身很快），但权重/CUDA 上下文只加载一次。
+        K, weights_dir, est_refine_iter, track_refine_iter, debug, debug_dir :
+            含义同 `PoseEstimatorAPI`，作用于内部所有目标共用。
+        """
+        if not objects:
+            raise ValueError("objects 不能为空，至少需要指定一个目标名及其 mesh 路径。")
+
+        self._scorer, self._refiner, self._glctx = \
+            FoundationPoseTracker.create_shared_resources(weights_dir)
+
+        self._trackers: dict[str, FoundationPoseTracker] = {}
+        for name, mesh_file in objects.items():
+            logging.info(f"[MultiObjectPoseEstimator] 初始化目标 '{name}' ← {mesh_file}")
+            self._trackers[name] = FoundationPoseTracker(
+                mesh_file=mesh_file,
+                weights_dir=weights_dir,
+                K=K,
+                est_refine_iter=est_refine_iter,
+                track_refine_iter=track_refine_iter,
+                debug=debug,
+                debug_dir=debug_dir,
+                scorer=self._scorer,
+                refiner=self._refiner,
+                glctx=self._glctx,
+            )
+
+    @property
+    def object_names(self) -> list[str]:
+        """所有已注册的目标名称列表。"""
+        return list(self._trackers.keys())
+
+    def is_initialized(self, name: str) -> bool:
+        """指定目标是否已完成过至少一次 estimate_all()（可以开始 track_all()）。"""
+        return self._trackers[name]._pose is not None
+
+    def reset(self, name: str | None = None) -> None:
+        """重置指定目标（或全部目标，name=None）的跟踪状态。"""
+        names = [name] if name is not None else list(self._trackers.keys())
+        for n in names:
+            self._trackers[n].reset()
+
+    def estimate_all(
+        self,
+        rgb: np.ndarray,
+        masks: dict[str, np.ndarray | None],
+        depth: np.ndarray | None = None,
+        reinit: bool = True,
+    ) -> dict[str, np.ndarray]:
+        """
+        对 `masks` 中提供了有效掩码的目标分别执行一次完整姿态估计
+        （对应 `PoseEstimatorAPI.estimate()`，逐个目标调用底层 register）。
+
+        参数
+        ----
+        rgb   : uint8, (H, W, 3)，RGB 顺序，同一帧内所有目标共用
+        masks : dict[名称, mask 或 None]
+            每个目标各自的二值掩码；名称不在 `self.object_names` 中的条目
+            会被忽略并打印警告；mask 为 None 或全 0（该目标当前不可见）的
+            条目会被跳过（不会报错，也不会写入返回结果）。
+        depth : float32, (H, W)，可选，同一帧内所有目标共用
+        reinit : 同 `PoseEstimatorAPI.estimate()`：True（默认）时每个目标
+            调用前都先清空该目标自己的跟踪历史，视为独立估计。
+
+        返回
+        ----
+        dict[名称, pose_4x4]，只包含本次成功执行了估计的目标。
+        """
+        poses = {}
+        for name, mask in masks.items():
+            if name not in self._trackers:
+                logging.warning(f"[MultiObjectPoseEstimator] 未知目标名 '{name}'，跳过。")
+                continue
+            if mask is None or np.count_nonzero(mask) == 0:
+                continue
+            tracker = self._trackers[name]
+            if reinit:
+                tracker.reset()
+            poses[name] = tracker.initialize(rgb=rgb, mask=mask, depth=depth)
+        return poses
+
+    def track_all(
+        self,
+        rgb: np.ndarray,
+        depth: np.ndarray | None = None,
+        only_initialized: bool = True,
+        exclude: set[str] | None = None,
+    ) -> dict[str, np.ndarray]:
+        """
+        对已初始化过的目标分别执行增量跟踪（对应 `PoseEstimatorAPI.track()`）。
+
+        参数
+        ----
+        rgb, depth : 同 `estimate_all`
+        only_initialized : True（默认）时静默跳过尚未初始化的目标；
+            False 时遇到未初始化的目标会抛出 RuntimeError。
+        exclude : 可选，本次调用要跳过的目标名集合（典型用途：同一帧里刚
+            通过 `estimate_all()` 重新初始化过的目标，不需要在同一帧里
+            紧接着再 track 一次）。
+
+        返回
+        ----
+        dict[名称, pose_4x4]
+        """
+        exclude = exclude or set()
+        poses = {}
+        for name, tracker in self._trackers.items():
+            if name in exclude:
+                continue
+            if tracker._pose is None:
+                if only_initialized:
+                    continue
+                raise RuntimeError(f"目标 '{name}' 尚未初始化，请先调用 estimate_all()。")
+            poses[name] = tracker.track(rgb=rgb, depth=depth)
+        return poses
+
+    def visualize_all(
+        self,
+        rgb: np.ndarray,
+        poses: dict[str, np.ndarray],
+        colors: dict[str, tuple[int, int, int]] | None = None,
+    ) -> np.ndarray:
+        """
+        在同一张图上叠加绘制多个目标各自的 3D 包围框 + 坐标轴 + 名称标签。
+
+        参数
+        ----
+        rgb    : uint8, (H, W, 3)，RGB 顺序
+        poses  : dict[名称, pose_4x4]，通常是 `estimate_all`/`track_all` 的返回值
+        colors : 可选，dict[名称, (B,G,R)]，每个目标名称标签文字的颜色
+                 （3D 包围框/坐标轴颜色由 FoundationPose 内部固定，不受此参数
+                 影响），不提供时按预设调色板循环分配。
+
+        返回
+        ----
+        vis : uint8 (H, W, 3) BGR，可直接 cv2.imshow / cv2.imwrite
+        """
+        palette = [(0, 255, 255), (255, 0, 255), (255, 255, 0),
+                   (0, 165, 255), (255, 128, 0), (128, 0, 255)]
+        vis = None
+        for i, (name, pose) in enumerate(poses.items()):
+            tracker = self._trackers.get(name)
+            if tracker is None:
+                continue
+            base_rgb = rgb if vis is None else cv2.cvtColor(vis, cv2.COLOR_BGR2RGB)
+            vis = tracker.visualize(base_rgb, pose)
+
+            color = (colors or {}).get(name, palette[i % len(palette)])
+            center_cam = pose[:3, 3]
+            if center_cam[2] > 1e-6:
+                uv = tracker._K @ center_cam
+                u, v = int(uv[0] / uv[2]), int(uv[1] / uv[2])
+                cv2.putText(vis, name, (u + 6, v - 6),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2, cv2.LINE_AA)
+
+        if vis is None:
+            # 没有任何有效姿态时，原样返回（转 BGR）以便调用方仍可显示/保存
+            vis = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+        return vis
+
+
+# ─────────────────────────────────────────────
+#  多目标 CLI 辅助函数
+# ─────────────────────────────────────────────
+def _discover_multi_object_masks(mask_root: str | None) -> dict[str, str] | None:
+    """检测 mask_root 是否为『每个目标一个子目录』的多目标掩码结构（如
+    05_collect_pose_estimation_data_mujoco.py 采集的 masks/square_nut/、
+    masks/square_nut_2/），是则返回 {目标名: 该目标掩码子目录路径}；不是
+    （目录下直接是 *.png，或目录不存在）则返回 None，调用方应退回单目标模式。
+    """
+    if not mask_root or not os.path.isdir(mask_root):
+        return None
+    result = {}
+    for entry in sorted(os.listdir(mask_root)):
+        sub = os.path.join(mask_root, entry)
+        if os.path.isdir(sub) and glob.glob(os.path.join(sub, "*.png")):
+            result[entry] = sub
+    return result or None
+
+
+def _parse_object_mesh_overrides(entries: list[str]) -> dict[str, str]:
+    """解析 --object_mesh 'NAME=PATH' 参数列表为 {名称: mesh 路径} 字典。"""
+    overrides = {}
+    for item in entries:
+        if "=" not in item:
+            raise ValueError(f"--object_mesh 格式错误（应为 NAME=PATH）: {item}")
+        name, path = item.split("=", 1)
+        overrides[name.strip()] = path.strip()
+    return overrides
+
+
+def _run_multi_object_cli(args, source: "FrameSource", K: np.ndarray,
+                          mask_dirs: dict[str, str], rgb0: np.ndarray,
+                          depth0: np.ndarray | None) -> None:
+    """多目标模式主循环：对每一帧同时估计 mask_dirs 中所有目标的 6D 姿态，
+    并把所有目标的可视化结果叠加输出到同一张图上。
+
+    与单目标模式的主循环相比：
+      - 每个目标独立维护自己的姿态/跟踪状态（MultiObjectPoseEstimator 内部管理）；
+      - 每一帧里，某个目标若尚未初始化（或开启 --reinit_each_frame）且当前帧
+        存在该目标的有效掩码，则对其执行 estimate（register）；否则（已初始化
+        且本帧不重新初始化）对其执行 track；若尚未初始化且当前帧也没有掩码，
+        则该目标本帧不产生姿态（等下一帧掩码出现后再初始化）；
+      - 保存结果时，每个目标的姿态矩阵分别保存至 output_dir/poses/<目标名>/*.txt，
+        可视化结果叠加到同一张图后保存至 output_dir/vis/*.png。
+    """
+    mesh_overrides = _parse_object_mesh_overrides(args.object_mesh)
+    objects = {name: mesh_overrides.get(name, args.mesh) for name in mask_dirs}
+
+    print(f"[多目标模式] 检测到 {len(objects)} 个目标: {list(objects.keys())}")
+    for name, mesh_file in objects.items():
+        print(f"    {name:<16s} ← {mesh_file}")
+
+    estimator = MultiObjectPoseEstimator(
+        objects=objects,
+        K=K,
+        weights_dir=args.weights_dir,
+        est_refine_iter=args.est_refine_iter,
+        track_refine_iter=args.track_refine_iter,
+        debug=args.debug,
+        debug_dir=args.output_dir,
+    )
+
+    def _load_mask(name, idx):
+        files = sorted(glob.glob(os.path.join(mask_dirs[name], "*.png")))
+        if idx >= len(files):
+            return None
+        m = cv2.imread(files[idx], cv2.IMREAD_GRAYSCALE)
+        if m is None or m.max() == 0:
+            return None
+        _, m = cv2.threshold(m, 127, 255, cv2.THRESH_BINARY)
+        return m
+
+    pose_dir = os.path.join(args.output_dir, "poses")
+    vis_dir = os.path.join(args.output_dir, "vis")
+    if args.save_pose:
+        for name in objects:
+            os.makedirs(os.path.join(pose_dir, name), exist_ok=True)
+    if args.save_vis:
+        os.makedirs(vis_dir, exist_ok=True)
+
+    H, W = rgb0.shape[:2]
+    writer = None
+    if args.save_video:
+        os.makedirs(args.output_dir, exist_ok=True)
+        out_path = os.path.join(args.output_dir, "result.mp4")
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(out_path, fourcc, 30, (W, H))
+        print(f"[信息] 结果视频将保存至 {out_path}")
+
+    if args.reinit_each_frame:
+        print("[信息] --reinit_each_frame 已开启：每一帧只要目标存在有效掩码文件，"
+              "都会独立重新执行姿态估计（register）；无对应掩码的帧仍走 track() 跟踪。\n")
+
+    frame_idx = 0
+    cur_rgb, cur_depth = rgb0, depth0
+
+    while True:
+        if cur_rgb is None:
+            print("[信息] 输入已读取完毕。")
+            break
+
+        masks = {name: _load_mask(name, frame_idx) for name in objects}
+
+        # 本帧需要执行 estimate（register）的目标：尚未初始化，或开启了
+        # --reinit_each_frame，且当前帧存在该目标的有效掩码
+        to_estimate = {
+            name: mask for name, mask in masks.items()
+            if mask is not None and (
+                not estimator.is_initialized(name) or args.reinit_each_frame
+            )
+        }
+
+        poses = {}
+        if to_estimate:
+            poses.update(estimator.estimate_all(cur_rgb, to_estimate, depth=cur_depth,
+                                                reinit=False))
+        poses.update(estimator.track_all(cur_rgb, depth=cur_depth, only_initialized=True,
+                                         exclude=set(to_estimate.keys())))
+
+        if poses:
+            if args.save_pose:
+                for name, pose in poses.items():
+                    np.savetxt(
+                        os.path.join(pose_dir, name, f"{frame_idx:06d}.txt"),
+                        pose.reshape(4, 4),
+                    )
+
+            vis_bgr = estimator.visualize_all(cur_rgb, poses)
+
+            if args.save_vis:
+                cv2.imwrite(os.path.join(vis_dir, f"{frame_idx:06d}.png"), vis_bgr)
+            if args.show:
+                cv2.imshow("FoundationPose (multi-object)", vis_bgr)
+            if writer is not None:
+                writer.write(vis_bgr)
+        elif args.show:
+            cv2.imshow("FoundationPose (multi-object)",
+                       cv2.cvtColor(cur_rgb, cv2.COLOR_RGB2BGR))
+
+        if frame_idx % 50 == 0:
+            print(f"[信息] 已处理 {frame_idx} 帧 …（本帧有效姿态: {list(poses.keys())}）")
+
+        if args.show:
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("q"):
+                print("[信息] 用户退出。")
+                break
+            elif key == ord("r"):
+                print("[信息] 重新初始化全部目标 …")
+                estimator.reset()
+
+        frame_idx += 1
+        cur_rgb, cur_depth = source.read()
+
+    source.release()
+    if writer is not None:
+        writer.release()
+    if args.show:
+        cv2.destroyAllWindows()
+
+    summary = f"[信息] 共处理 {frame_idx} 帧（多目标模式，{len(objects)} 个目标）"
+    if args.save_pose:
+        summary += f"，各目标姿态矩阵已分别保存至 {pose_dir}/<目标名>/"
+    if args.save_vis:
+        summary += f"，叠加可视化图片已保存至 {vis_dir}/"
+    print(summary)
+
+
+# ─────────────────────────────────────────────
 #  命令行入口
 # ─────────────────────────────────────────────
 def main():
@@ -659,7 +1116,25 @@ def main():
     )
     parser.add_argument(
         "--mask_dir", default=None,
-        help="掩码目录（含 masks/*.png）。提供后跳过 GUI 框选，支持 headless 运行。",
+        help=(
+            "掩码目录。提供后跳过 GUI 框选，支持 headless 运行。支持两种结构：\n"
+            "  单目标：<mask_dir>/*.png（或 <mask_dir>/masks/*.png）\n"
+            "  多目标：<mask_dir>/<目标名>/*.png（每个目标一个子目录，如\n"
+            "          05_collect_pose_estimation_data_mujoco.py 采集的\n"
+            "          masks/square_nut/、masks/square_nut_2/），检测到该结构\n"
+            "          会自动进入多目标模式，对每个子目录分别估计位姿并把\n"
+            "          结果叠加可视化到同一张图上。"
+        ),
+    )
+    parser.add_argument(
+        "--object_mesh", action="append", default=[],
+        metavar="NAME=PATH",
+        help=(
+            "仅多目标模式下使用：为指定目标单独指定 mesh 文件（可重复传入该参数），\n"
+            "格式 'NAME=PATH'，例如 --object_mesh square_nut_2=other_mesh.obj。\n"
+            "未通过该参数指定 mesh 的目标，默认使用 --mesh 指定的公共 mesh\n"
+            "（适用于本仓库两个螺母共用同一个 mesh 的场景）。"
+        ),
     )
     parser.add_argument(
         "--reinit_each_frame", action="store_true",
@@ -731,6 +1206,18 @@ def main():
         logging.info(f"从文件加载相机内参: {args.cam_K_file}")
     else:
         K = parse_K(args.K, H, W)
+
+    # ── 多目标模式检测：掩码目录下是否为『每个目标一个子目录』的结构 ──
+    mask_root_candidate = args.mask_dir
+    if mask_root_candidate is None and os.path.isdir(str(args.input)):
+        auto_mask_dir = os.path.join(str(args.input), "masks")
+        if os.path.isdir(auto_mask_dir):
+            mask_root_candidate = auto_mask_dir
+
+    multi_masks = _discover_multi_object_masks(mask_root_candidate)
+    if multi_masks:
+        _run_multi_object_cli(args, source, K, multi_masks, rgb0, depth0)
+        return
 
     # ── 加载掩码文件列表（headless 模式）──
     mask_files: list[str] = []
