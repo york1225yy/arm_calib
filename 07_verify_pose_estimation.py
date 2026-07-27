@@ -14,9 +14,13 @@ FoundationPose（foundationpose_api.py）对每一帧输出的是物体（螺母
 而 MuJoCo 仿真在采集数据时（05_collect_pose_estimation_data_mujoco.py）
 针对每一帧保存了：
     - joint_angles_rad     ：采集时刻各关节角
-    - nut_pose_world_4x4   ：第一个螺母（square_nut）在世界坐标系下的真值位姿（兼容旧版单螺母脚本）
-    - nuts_pose_world_4x4  ：{螺母名: 世界坐标系真值位姿} 字典，包含场景中全部螺母
-                             （如 gen3_with_two_nuts.xml 场景中的 "square_nut"/"square_nut_2"）
+    - nut_pose_world_4x4   ：按名称排序后第一个目标在世界坐标系下的真值位姿
+                             （兼容旧版单/双螺母脚本；单螺母场景固定是
+                             "square_nut"，三物体场景 gen3_with_two_nuts_and_round_nut.xml
+                             下因字母序 "round_nut" < "square_nut" 会变成 round_nut）
+    - nuts_pose_world_4x4  ：{目标名: 世界坐标系真值位姿} 字典，包含场景中全部目标
+                             （如 gen3_with_two_nuts.xml 场景中的 "square_nut"/"square_nut_2"，
+                             gen3_with_two_nuts_and_round_nut.xml 场景中再加一个 "round_nut"）
 
 结合 gen3_with_nut.xml 建模参数，用 MuJoCo 正向运动学可以精确计算出相机
 在世界坐标系下的位姿 T_cam_world（MuJoCo 原始约定：相机沿 -Z 看向目标），
@@ -33,18 +37,25 @@ FoundationPose（foundationpose_api.py）对每一帧输出的是物体（螺母
 
 注意：06_convert_nut_mesh_for_foundationpose.py 生成网格时刻意让网格局部
 坐标系与 gen3_with_nut.xml 中 body "square_nut" 的坐标系完全对齐，所以此
-处无需额外做网格原点/朝向的换算（场景中的其余螺母如 "square_nut_2" 使用
-完全相同的几何体/网格，仅世界位姿不同，同样无需额外换算）。
+处无需额外做网格原点/朝向的换算（场景中的其余目标如 "square_nut_2"/"round_nut"
+分别使用各自的网格 nut_mesh/textured_simple.obj / nut_mesh/round_nut_textured_simple.obj，
+局部坐标系同样与各自的 body 坐标系严格对齐，同样无需额外换算）。
 
-多目标（双螺母等）支持
+多目标（双螺母、三物体等）支持
 ----
 若 foundationpose_api.py 是以多目标模式运行的（见其 MultiObjectPoseEstimator /
 --mask_dir 多子目录用法），估计结果会分别保存在 --est_dir 下的多个子目录中
-（如 output_2nuts/poses/square_nut/、output_2nuts/poses/square_nut_2/）。本脚本
-会自动检测这种『每个目标一个子目录』的结构并进入多目标批量对比模式：对每个
-子目录分别按帧号与 --gt_dir 中 json 的 nuts_pose_world_4x4[对应目标名] 配对
-比较，并额外打印/保存跨目标的整体汇总统计。单帧模式下也可用 --nut_name 指定
-要对比的目标名（对应 nuts_pose_world_4x4 的 key）。
+（如 output_2nuts/poses/square_nut/、output_2nuts/poses/square_nut_2/，或三物体
+场景 output_3nuts/poses/round_nut/、square_nut/、square_nut_2/）。本脚本会自动
+检测这种『每个目标一个子目录』的结构并进入多目标批量对比模式：对每个子目录
+分别按帧号与 --gt_dir 中 json 的 nuts_pose_world_4x4[对应目标名] 配对比较，
+并额外打印/保存跨目标的整体汇总统计。单帧模式下也可用 --nut_name 指定要
+对比的目标名（对应 nuts_pose_world_4x4 的 key）。--xml 只用于计算相机在世界
+坐标系下的位姿（机械臂+相机结构在 gen3_with_nut.xml / gen3_with_two_nuts.xml /
+gen3_with_two_nuts_and_round_nut.xml 三个场景文件中完全一致），与场景里有
+几个目标、目标叫什么名字无关，因此三物体场景下 --xml 传哪一个都能得到相同
+结果，但建议传与采集数据一致的 gen3_with_two_nuts_and_round_nut.xml 以保持
+语义清晰。
 
 用法
 ----
@@ -59,6 +70,13 @@ FoundationPose（foundationpose_api.py）对每一帧输出的是物体（螺母
       --gt_pose  pose_estimation_data_2nuts/poses/frame_000000.json \\
       --nut_name square_nut_2
 
+  # 对比单帧（三物体场景，指定要核验的圆形螺母）
+  python 07_verify_pose_estimation.py \\
+      --xml gen3_with_two_nuts_and_round_nut.xml \\
+      --est_pose output_3nuts/poses/round_nut/000000.txt \\
+      --gt_pose  pose_estimation_data_3nuts/poses/frame_000000.json \\
+      --nut_name round_nut
+
   # 批量对比目录下所有匹配的帧（按序号自动配对，单目标）
   python 07_verify_pose_estimation.py \\
       --est_dir output/poses --gt_dir pose_estimation_data/poses
@@ -67,6 +85,18 @@ FoundationPose（foundationpose_api.py）对每一帧输出的是物体（螺母
   python 07_verify_pose_estimation.py \\
       --est_dir output_2nuts/poses --gt_dir pose_estimation_data_2nuts/poses \\
       --save_result output_2nuts/pose_verify_result.json
+
+  # 批量对比（三物体场景，自动检测 est_dir 下的 round_nut/、square_nut/、
+  # square_nut_2/ 三个子目录；先用 05_collect_pose_estimation_data_mujoco.py
+  # --xml gen3_with_two_nuts_and_round_nut.xml 采集出 pose_estimation_data_3nuts，
+  # 再用 foundationpose_api.py --mesh nut_mesh/textured_simple.obj
+  # --object_mesh round_nut=nut_mesh/round_nut_textured_simple.obj
+  # --input pose_estimation_data_3nuts --cam_K_file pose_estimation_data_3nuts/cam_K.txt
+  # --output_dir output_3nuts 生成估计结果后即可运行）
+  python 07_verify_pose_estimation.py \\
+      --xml gen3_with_two_nuts_and_round_nut.xml \\
+      --est_dir output_3nuts/poses --gt_dir pose_estimation_data_3nuts/poses \\
+      --save_result output_3nuts/pose_verify_result.json
 """
 
 import argparse
