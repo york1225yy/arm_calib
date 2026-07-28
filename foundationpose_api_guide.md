@@ -2,7 +2,8 @@
 
 本文档说明如何在**其他脚本 / 模块**中直接 `import` [foundationpose_api.py](foundationpose_api.py)，
 调用其中封装好的 `PoseEstimatorAPI` 完成 6-DoF 目标位姿估计，涵盖**单帧调用**与
-**摄像头/视频连续帧调用**两种典型场景，以及所有相关输入/输出参数的说明。
+**摄像头/视频连续帧调用**两种典型场景，以及同一帧内多个目标（`MultiObjectPoseEstimator`，
+详见第 8 节）的估计方式，以及所有相关输入/输出参数的说明。
 
 > 如果只是想跑现成的 CLI 脚本（视频/摄像头实时可视化），请直接使用
 > `python foundationpose_api.py --mesh ... --input ...`（见文件头部 docstring），
@@ -25,6 +26,10 @@ flowchart TD
 |---|---|---|---|---|---|
 | `estimate()` | `register()` | 需要 | 不依赖（可选清空历史状态） | 较慢（含旋转假设采样 + 打分选优） | 首帧初始化 / 单帧独立估计 / 跟踪丢失后重新初始化 |
 | `track()` | `track_one()` | 不需要 | 依赖（用上一帧姿态作为起点精化） | 更快 | 摄像头/视频连续帧的实时跟踪 |
+
+> 若同一帧图像里需要同时估计多个不同目标（如两个方形螺母 + 一个圆形螺母），
+> 请直接跳到第 8 节使用 `MultiObjectPoseEstimator`；本节以及第 2~7 节描述的 `PoseEstimatorAPI`
+> 只针对单个目标。
 
 ---
 
@@ -53,8 +58,9 @@ estimator = PoseEstimatorAPI(
 
 ## 3. 单帧调用（独立估计，互不依赖）
 
-适用场景：离线批处理、关键帧逐帧独立估计（如本仓库 [05_collect_pose_estimation_data_mujoco.py](05_collect_pose_estimation_data_mujoco.py) 采集的离散关键帧）、精度验证脚本
-（如 [08_compute_nut_pose_in_base.py](08_compute_nut_pose_in_base.py)）等。
+适用场景：离线批处理、关键帧逐帧独立估计（如本仓库 [05_collect_pose_estimation_data_mujoco.py](05_collect_pose_estimation_data_mujoco.py) 采集的离散关键帧）、单目标精度验证脚本
+（如 [08_compute_nut_pose_in_base.py](08_compute_nut_pose_in_base.py) 单螺母场景下的默认模式；该脚本现已支持多目标，
+见第 8 节）等。
 
 ```python
 # rgb   : uint8, (H, W, 3)，RGB 通道顺序（不是 BGR！）
@@ -213,6 +219,12 @@ T_nut_base = T_gripper_base @ T_cam_gripper @ T_nut_cam
 安装关系）和 `T_gripper_base`（由机械臂关节角正向运动学计算）来自机器人本体，
 不属于 FoundationPose API 的职责范围。
 
+若同一帧中需要对**多个目标**分别做这一整套换算（如 [gen3_with_two_nuts_and_round_nut.xml](gen3_with_two_nuts_and_round_nut.xml)
+场景中的 3 个螺母），`T_cam_gripper`/`T_gripper_base` 同一帧内所有目标共用（只取决于机械臂
+关节角，与目标无关），只有 `T_nut_cam` 需要对每个目标分别估计，可直接用
+`MultiObjectPoseEstimator`（第 8 节）代替 `PoseEstimatorAPI` 对每个目标分别调用，具体完整
+示例见 [08_compute_nut_pose_in_base.py](08_compute_nut_pose_in_base.py) 的 `run_multi_object()`。
+
 ---
 
 ## 7. 常见问题
@@ -227,3 +239,120 @@ T_nut_base = T_gripper_base @ T_cam_gripper @ T_nut_cam
 - **多次调用会不会很慢？** 构造 `PoseEstimatorAPI(...)` 本身（加载权重、网格）
   较慢，应该只做一次；之后反复调用 `estimate()`/`track()` 不会重新加载，速度
   取决于 `est_refine_iter`/`track_refine_iter` 迭代次数。
+- **场景里有好几个目标（比如 2 个方形螺母 + 1 个圆形螺母），怎么办？** 见下面
+  第 8 节的 `MultiObjectPoseEstimator`，以及 [08_compute_nut_pose_in_base.py](08_compute_nut_pose_in_base.py)
+  的多目标模式（`--object_mesh`/`--object_grasp_pose_file` 按目标名单独指定网格/抓取位姿）。
+
+---
+
+## 8. 多目标位姿估计（同一帧内多个不同目标）
+
+适用场景：同一帧图像里有多个待估计的物体实例（可以是同一 mesh 的多个不同姿态实例，
+如 [gen3_with_two_nuts.xml](gen3_with_two_nuts.xml) 里的两个方形螺母；也可以是不同 mesh
+的不同物体，如 [gen3_with_two_nuts_and_round_nut.xml](gen3_with_two_nuts_and_round_nut.xml)
+里 2 个方形螺母 + 1 个圆形螺母）。每个目标各自维护独立的姿态/跟踪状态，但共享同一份
+权重（`ScorePredictor`/`PoseRefinePredictor`）和 CUDA 光栅化上下文，避免多个目标重复
+加载权重带来的显存/时间开销。
+
+### 8.1 基本用法
+
+```python
+import cv2
+import numpy as np
+from foundationpose_api import MultiObjectPoseEstimator
+
+K = np.loadtxt("pose_estimation_data_3nuts/cam_K.txt").reshape(3, 3)
+
+# {目标名: mesh 文件路径}：目标名对应采集数据 masks/<目标名>/ 子目录名，
+# 多个目标名可以指向同一个 mesh 文件（如两个方形螺母共用同一个 mesh）。
+estimator = MultiObjectPoseEstimator(
+    objects={
+        "square_nut":   "nut_mesh/textured_simple.obj",
+        "square_nut_2": "nut_mesh/textured_simple.obj",
+        "round_nut":    "nut_mesh/round_nut_textured_simple.obj",
+    },
+    K=K,
+)
+
+rgb = ...      # (H, W, 3) uint8, RGB 顺序，同一帧内所有目标共用
+depth = ...    # (H, W) float32, 单位米，可选，同一帧内所有目标共用
+masks = {
+    "square_nut":   cv2.imread("pose_estimation_data_3nuts/masks/square_nut/frame_000000.png", cv2.IMREAD_GRAYSCALE),
+    "square_nut_2": cv2.imread("pose_estimation_data_3nuts/masks/square_nut_2/frame_000000.png", cv2.IMREAD_GRAYSCALE),
+    "round_nut":    cv2.imread("pose_estimation_data_3nuts/masks/round_nut/frame_000000.png", cv2.IMREAD_GRAYSCALE),
+}
+
+# 首帧 / 需要重新初始化：对提供了有效掩码的目标分别执行一次完整估计
+poses = estimator.estimate_all(rgb, masks, depth=depth)
+# poses: dict[str, np.ndarray(4,4)]，只包含本次成功估计的目标
+
+# 后续帧：不需要 mask，对已初始化的目标分别做增量跟踪
+poses = estimator.track_all(rgb, depth=depth)
+
+# 可视化：把所有目标的 3D 包围框 + 坐标轴 + 名称标签叠加到同一张图上
+vis_bgr = estimator.visualize_all(rgb, poses)
+cv2.imwrite("output_3nuts/vis/000000.png", vis_bgr)
+```
+
+### 8.2 `MultiObjectPoseEstimator` 参数说明
+
+`__init__(objects, K, weights_dir=..., est_refine_iter=5, track_refine_iter=2, debug=0, debug_dir="output")`
+
+| 参数 | 类型 | 说明 |
+|---|---|---|
+| `objects` | `dict[str, str]` | `{目标名: mesh 文件路径}`。目标名是调用方自定义的唯一标识（通常对应采集数据 `masks/<目标名>/` 子目录名），多个目标名可指向同一个 mesh 文件。 |
+| `K`/`weights_dir`/`est_refine_iter`/`track_refine_iter`/`debug`/`debug_dir` | 同 `PoseEstimatorAPI` | 作用于内部所有目标共用。 |
+
+| 方法 | 说明 |
+|---|---|
+| `estimate_all(rgb, masks, depth=None, reinit=True)` | 对 `masks` 中提供了有效掩码（非 `None` 且非全 0）的目标分别执行一次 `estimate()`；名称不在 `objects` 中的条目会被忽略并打印警告。返回 `dict[名称, pose_4x4]`，只包含本次成功估计的目标。 |
+| `track_all(rgb, depth=None, only_initialized=True, exclude=None)` | 对已初始化过的目标分别执行 `track()`；`exclude` 可传入本次要跳过的目标名集合（如同一帧里刚用 `estimate_all()` 重新初始化过的目标）。返回 `dict[名称, pose_4x4]`。 |
+| `visualize_all(rgb, poses, colors=None)` | 把 `poses` 中每个目标的 3D 包围框/坐标轴叠加绘制到同一张图上，并在每个目标投影中心附近标注名称。返回 `uint8 BGR` 图像。 |
+| `is_initialized(name)` | 指定目标是否已完成过至少一次 `estimate_all()`。 |
+| `reset(name=None)` | 重置指定目标（或 `name=None` 时重置全部目标）的跟踪状态。 |
+| `object_names` | 属性，所有已注册的目标名称列表。 |
+
+### 8.3 命令行多目标模式
+
+`foundationpose_api.py` 的 CLI 会自动检测 `--mask_dir`（或 `<input>/masks/`）下是否为
+「每个目标一个子目录」的结构，是则自动进入多目标模式：
+
+```bash
+python foundationpose_api.py \
+    --mesh nut_mesh/textured_simple.obj \
+    --object_mesh round_nut=nut_mesh/round_nut_textured_simple.obj \
+    --input pose_estimation_data_3nuts --cam_K_file pose_estimation_data_3nuts/cam_K.txt \
+    --output_dir output_3nuts --save_vis
+```
+
+`--mesh` 是未被 `--object_mesh` 覆盖的目标的默认网格（这里两个方形螺母共用）；
+`--object_mesh NAME=PATH` 可重复传入，为指定目标单独指定网格（这里 `round_nut`
+使用圆形螺母网格）。各目标的姿态矩阵分别保存至 `output_3nuts/poses/<目标名>/*.txt`，
+叠加可视化结果保存至 `output_3nuts/vis/*.png`。
+
+### 8.4 结合机械臂运动学换算到基坐标系（多目标版）
+
+[08_compute_nut_pose_in_base.py](08_compute_nut_pose_in_base.py) 会自动检测
+`<data_dir>/masks/` 是否为多目标结构，是则调用其内部的 `run_multi_object()`，
+对每个目标分别算出完整的变换链（`T_nut_cam` → `T_nut_base` → `T_grasp_base` →
+`T_flange_base`）并与该目标的仿真真值比较，最后汇总跨目标的整体精度统计：
+
+```bash
+python 08_compute_nut_pose_in_base.py \
+    --xml gen3_with_two_nuts_and_round_nut.xml \
+    --mesh nut_mesh/textured_simple.obj \
+    --object_mesh round_nut=nut_mesh/round_nut_textured_simple.obj \
+    --grasp_pose_file nut_grasp_pose.json \
+    --object_grasp_pose_file round_nut=nut_grasp_pose_round.json \
+    --data_dir pose_estimation_data_3nuts --frame_idx 0 \
+    --tcp_flange_file tcp_flange.json \
+    --save_result output_3nuts/nut_pose_in_base_000000.json
+```
+
+其中 `--grasp_pose_file`/`--object_grasp_pose_file` 的关系与 `--mesh`/`--object_mesh`
+完全一致：未被 `--object_grasp_pose_file` 覆盖的目标使用 `--grasp_pose_file` 指定的
+公共抓取位姿文件。两个方形螺母的把手几何完全相同，可以共用
+[nut_grasp_pose.json](nut_grasp_pose.json)；圆形螺母的把手中心位置与方形螺母不同
+（局部 X 方向 0.06 而非 0.054），需要单独提供
+[nut_grasp_pose_round.json](nut_grasp_pose_round.json)。
+
