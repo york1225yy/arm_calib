@@ -1,0 +1,582 @@
+<!--
+  ════════════════════════════════════════════════════════════════════
+  Kinova Gen3 七轴机械臂 + Robotiq 2F-85 夹爪 + Intel RealSense D435i
+  手眼标定/抓取仿真场景
+  （在 gen3_with_two_nuts_and_round_nut.xml 基础上，将 robotiq_gripper_85.xml
+   中定义的 Robotiq 2F-85 夹爪模型作为子树挂载到机械臂末端法兰 bracelet_link
+   下，与原有的两个方形螺母 square_nut/square_nut_2、一个圆形螺母 round_nut、
+   D435i 相机保持不变）
+  ════════════════════════════════════════════════════════════════════
+
+  【夹爪网格文件说明】
+    Robotiq 2F-85 夹爪的全部 STL 网格文件（碰撞体 + 可视化，共10个）
+    已从 mujoco/robosuite 仓库中复制到本仓库
+    arm_calib/robotiq_85_gripper/ 目录下（与 arm_calib/kinova_gen3、
+    arm_calib/realsense_d435i 的组织方式保持一致：网格文件夹与场景 xml
+    文件平级放置在 arm_calib/ 根目录下）。
+    本文件中的 <mesh> 声明使用相对路径 "robotiq_85_gripper/*.stl"
+    （相对于本 xml 文件所在目录，即 arm_calib/），可直接编译加载，
+    无需额外配置。
+    备注：robosuite 原始资源中 "robotiq_arg2f_base_link_vis.stl"
+    本身就缺失（上游历史遗留问题），这里用同款 base_link 碰撞体网格
+    复制了一份代替，视觉效果与碰撞体一致，不影响使用。
+
+  【夹爪安装位置说明】
+    Robotiq 2F-85 的适配器坐标系原点（robotiq_85_adapter_link）挂载在
+    bracelet_link 的 "pinch_site" 位姿处（pos="0 0 -0.061525"
+    quat="0 1 0 0"，与原场景中标记 TCP 方向的 site 完全一致），即认为
+    夹爪安装面与法兰工具坐标系重合、法兰 Z 轴即为夹爪接近方向。
+    夹爪内部 "eef" body（pos="0 0 0.145"，沿夹爪自身 Z 轴前伸 14.5 cm）
+    近似对应两指闭合中心（真实 TCP）。如需与 tcp_flange.json 中的
+    T_tcp_flange 标定结果对齐，请按实际测量或 CAD 数据调整本文件中
+    "robotiq_85_adapter_link" 的 pos/quat，并同步更新 tcp_flange.json。
+
+  【新增内容一览（相对 gen3_with_two_nuts_and_round_nut.xml）】
+    - <asset>       追加 Robotiq 2F-85 全部网格（碰撞 + 可视化）声明
+    - <tendon>      新增顶层 tendon 区块（两个耦合传动，finger1/finger2）
+    - <worldbody>   bracelet_link 下新增 "robotiq_85_adapter_link" 子树
+                    （夹爪底座 + 两个外关节 + 两个内关节 + 两个指尖）
+    - <actuator>    追加两个夹爪手指位置执行器 finger_1 / finger_2
+    - <sensor>      新增顶层 sensor 区块（力/力矩传感器，位于夹爪基座）
+  ════════════════════════════════════════════════════════════════════
+-->
+<mujoco model="gen3_with_gripper_and_nuts">
+  <!-- 角度单位：弧度（radian）；fitaabb=true 让查看器自动缩放至包含全部物体 -->
+  <compiler angle="radian" fitaabb="true"/>
+
+  <!-- 物理积分器：implicitfast 是隐式欧拉快速近似，适合刚体位置控制仿真 -->
+  <option integrator="implicitfast"/>
+
+  <!--
+  ──────────────────────────────────────────────────────────────────
+  【默认属性继承（default）】
+  类似 CSS 的"样式模板"：给一个 class 定义属性后，
+  所有引用 class="xxx" 的 geom/actuator 自动继承，避免重复书写。
+  ──────────────────────────────────────────────────────────────────
+  -->
+  <default>
+    <!-- 视觉网格（class="visual"）：仅用于渲染，不参与碰撞
+         contype=0 / conaffinity=0 → 关闭碰撞；group="2" → 渲染分组2
+         rgba：浅灰色，机械臂外壳颜色 -->
+    <default class="visual">
+      <geom type="mesh" contype="0" conaffinity="0" group="2" rgba="0.75294 0.75294 0.75294 1"/>
+    </default>
+    <!-- 碰撞网格（class="collision"）：参与物理碰撞检测，查看器默认隐藏
+         group="3" → 渲染分组3（不显示，避免遮挡视觉外观） -->
+    <default class="collision">
+      <geom type="mesh" group="3"/>
+    </default>
+    <!-- 大关节执行器（关节1~4，大臂位置，输出力矩大）
+         kp=2000  位置控制比例增益（N·m/rad），数值越大响应越快
+         kv=100   速度阻尼（N·m·s/rad），抑制超调振荡
+         forcerange：输出力矩限幅 ±105 N·m -->
+    <default class="large_actuator">
+      <position kp="2000" kv="100" forcerange="-105 105"/>
+    </default>
+    <!-- 小关节执行器（关节5~7，腕部，质量轻，力矩需求小）
+         kp=500，kv=50，最大力矩 ±52 N·m -->
+    <default class="small_actuator">
+      <position kp="500" kv="50" forcerange="-52 52"/>
+    </default>
+    <!-- D435i 相机外壳的材质基础属性（无镜面，微弱高光） -->
+    <default class="d435i">
+      <material specular="0" shininess="0.25"/>
+      <!-- D435i 视觉网格：无质量、不碰撞，仅用于外观显示 -->
+      <default class="d435i_visual">
+        <geom group="5" type="mesh" contype="0" conaffinity="0" mass="0"/>
+      </default>
+      <!-- D435i 碰撞网格：简化形状用于防碰撞检测 -->
+      <default class="d435i_collision">
+        <geom group="3" type="mesh" mass="0"/>
+      </default>
+    </default>
+    <!-- site 点标记的默认大小（半径 3mm，绿色），用于显示 TCP、光心等关键点 -->
+    <site size="0.003" rgba="0.2 0.7 0.2 0.8" group="4"/>
+  </default>
+
+  <!--
+  ──────────────────────────────────────────────────────────────────
+  【资源预加载（asset）】
+  在这里声明所有网格和材质，之后在 worldbody 的 geom 中通过名称引用。
+  ──────────────────────────────────────────────────────────────────
+  -->
+  <asset>
+    <!-- ── Kinova Gen3 各连杆三角网格（.stl 格式）──────────────────
+         路径相对于本 XML 文件所在目录 -->
+    <mesh name="base_link"                 file="kinova_gen3/assets/base_link.stl"/>
+    <mesh name="shoulder_link"             file="kinova_gen3/assets/shoulder_link.stl"/>
+    <mesh name="half_arm_1_link"           file="kinova_gen3/assets/half_arm_1_link.stl"/>
+    <mesh name="half_arm_2_link"           file="kinova_gen3/assets/half_arm_2_link.stl"/>
+    <mesh name="forearm_link"              file="kinova_gen3/assets/forearm_link.stl"/>
+    <mesh name="spherical_wrist_1_link"    file="kinova_gen3/assets/spherical_wrist_1_link.stl"/>
+    <mesh name="spherical_wrist_2_link"    file="kinova_gen3/assets/spherical_wrist_2_link.stl"/>
+    <mesh name="bracelet_with_vision_link" file="kinova_gen3/assets/bracelet_with_vision_link.stl"/>
+
+    <!-- ── D435i 相机外壳各部件的颜色材质 ──────────────────────── -->
+    <material class="d435i" name="Black_Acrylic"   rgba="0.070360 0.070360 0.070360 1"/><!-- 黑色亚克力外壳 -->
+    <material class="d435i" name="Cameras_Gray"    rgba="0.296138 0.296138 0.296138 1"/><!-- 相机灰色区域 -->
+    <material class="d435i" name="IR_Emitter_Lens" rgba="0.287440 0.665387 0.327778 1"/><!-- 红外发射镜头（绿色） -->
+    <material class="d435i" name="IR_Lens"         rgba="0.035601 0.035601 0.035601 1"/><!-- 红外接收镜头（深黑） -->
+    <material class="d435i" name="IR_Rim"          rgba="0.799102 0.806952 0.799103 1"/><!-- 镜头金属圈（银灰） -->
+    <material class="d435i" name="Metal_Casing"    rgba="1 1 1 1"/>                      <!-- 金属主壳体（白色） -->
+    <material class="d435i" name="RGB_Pupil"       rgba="0.087140 0.002866 0.009346 1"/><!-- RGB 镜头瞳孔（深红） -->
+
+    <!-- ── D435i 相机外观网格（.obj，共 9 个子部件）────────────────
+         每个文件对应相机外壳的一个颜色区域（镜头/外壳/金属圈等） -->
+    <mesh name="d435i_0" file="realsense_d435i/assets/d435i_0.obj"/>
+    <mesh name="d435i_1" file="realsense_d435i/assets/d435i_1.obj"/>
+    <mesh name="d435i_2" file="realsense_d435i/assets/d435i_2.obj"/>
+    <mesh name="d435i_3" file="realsense_d435i/assets/d435i_3.obj"/>
+    <mesh name="d435i_4" file="realsense_d435i/assets/d435i_4.obj"/>
+    <mesh name="d435i_5" file="realsense_d435i/assets/d435i_5.obj"/>
+    <mesh name="d435i_6" file="realsense_d435i/assets/d435i_6.obj"/>
+    <mesh name="d435i_7" file="realsense_d435i/assets/d435i_7.obj"/>
+    <mesh name="d435i_8" file="realsense_d435i/assets/d435i_8.obj"/><!-- 主壳体，质量 0.072 kg -->
+
+    <!-- ── 方形螺母材质（源自 robosuite square-nut.xml 的黄铜贴图）──────── -->
+    <texture name="brass-metal" type="cube" file="textures/brass-ambra.png"/>
+    <material name="bmetal" texture="brass-metal" reflectance="0.3" shininess="0.6"
+              specular="0.5" texrepeat="1 1" texuniform="true"/>
+
+    <!-- ── 圆形螺母材质（round-nut.xml 引用的钢铁贴图 steel-scratched.png
+         在本仓库 textures/ 目录中缺失，这里改用不依赖贴图文件的纯色
+         钢灰材质，避免场景编译时因贴图文件不存在而报错）──────── -->
+    <material name="smetal_plain" rgba="0.75 0.76 0.78 1" reflectance="0.3"
+              shininess="0.6" specular="0.5"/>
+
+    <!-- ── Robotiq 2F-85 夹爪网格（来自 robotiq_gripper_85.xml，见文件顶部
+         关于缺失网格文件的说明；路径相对本 xml 文件所在目录）──────── -->
+    <mesh name="robotiq_arg2f_base_link" file="robotiq_85_gripper/robotiq_arg2f_base_link.stl"/>
+    <mesh name="robotiq_arg2f_85_outer_knuckle" file="robotiq_85_gripper/robotiq_arg2f_85_outer_knuckle.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="robotiq_arg2f_85_outer_finger" file="robotiq_85_gripper/robotiq_arg2f_85_outer_finger.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="robotiq_arg2f_85_inner_finger" file="robotiq_85_gripper/robotiq_arg2f_85_inner_finger.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="robotiq_arg2f_85_inner_knuckle" file="robotiq_85_gripper/robotiq_arg2f_85_inner_knuckle.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="robotiq_arg2f_base_link_vis" file="robotiq_85_gripper/robotiq_arg2f_base_link_vis.stl"/>
+    <mesh name="robotiq_arg2f_85_outer_knuckle_vis" file="robotiq_85_gripper/robotiq_arg2f_85_outer_knuckle_vis.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="robotiq_arg2f_85_outer_finger_vis" file="robotiq_85_gripper/robotiq_arg2f_85_outer_finger_vis.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="robotiq_arg2f_85_inner_finger_vis" file="robotiq_85_gripper/robotiq_arg2f_85_inner_finger_vis.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="robotiq_arg2f_85_inner_knuckle_vis" file="robotiq_85_gripper/robotiq_arg2f_85_inner_knuckle_vis.stl" scale="0.001 0.001 0.001"/>
+  </asset>
+
+  <!--
+  ──────────────────────────────────────────────────────────────────
+  【腱耦合传动（tendon）】—— 来自 robotiq_gripper_85.xml
+  Robotiq 2F-85 是欠驱动平行夹爪，每根手指的外关节/内关节/内指节通过
+  固定腱（fixed tendon）耦合，只需一个执行器即可驱动整根手指的抓握动作。
+  ──────────────────────────────────────────────────────────────────
+  -->
+  <tendon>
+    <!-- finger2（左指）耦合传动 -->
+    <fixed name="finger2_12_cpl" range="-1 1" stiffness="0.4" springlength="0.001" limited="true">
+      <joint joint="finger_joint" coef="1"/>
+      <joint joint="left_inner_finger_joint" coef="-3"/>
+      <joint joint="left_inner_knuckle_joint" coef="1"/>
+    </fixed>
+
+    <!-- finger1（右指）耦合传动 -->
+    <fixed name="finger1_12_cpl" range="-1 1" stiffness="0.4" springlength="0.001" limited="true">
+      <joint joint="right_outer_knuckle_joint" coef="1"/>
+      <joint joint="right_inner_finger_joint" coef="-3"/>
+      <joint joint="right_inner_knuckle_joint" coef="1"/>
+    </fixed>
+  </tendon>
+
+  <worldbody>
+    <!-- 全局光源：正上方主光 + 侧方补光，保证相机视角不黑屏 -->
+    <light name="top_light"  pos="0 0 2.5" dir="0 0 -1"
+           diffuse="0.9 0.9 0.9" specular="0.3 0.3 0.3" directional="true"/>
+    <light name="side_light" pos="1 1 2.0" dir="-1 -1 -1"
+           diffuse="0.5 0.5 0.5" specular="0.1 0.1 0.1" directional="true"/>
+
+    <!-- 地板：浅灰色，覆盖 4m×4m，厚 5mm -->
+    <geom name="floor" type="plane" size="2 2 0.005"
+          rgba="0.8 0.8 0.8 1" contype="1" conaffinity="1" group="2"/>
+
+    <!--
+      方形螺母1（Square Nut，几何数据取自 mujoco/robosuite 的 square-nut.xml，
+      与 arm_calib/square-nut.xml、06_convert_nut_mesh_for_foundationpose.py
+      使用的是完全相同的一组 box 数值，因此该 body 的局部坐标系
+      与转换出的 FoundationPose 网格坐标系严格一致）。
+      quat="0.7071 0.7071 0 0" 表示绕 X 轴旋转 90°，使螺母正面朝向 -Y（面向相机）
+      螺母本身无关节、固连于世界坐标系，其 world 位姿只由这里的 pos/quat 决定，
+      可在采集脚本中直接通过 mj_name2id + data.xpos/xmat 读取，作为姿态估计的真值。
+    -->
+    <body name="square_nut" pos="0.0 0.65 0.85" quat="0.7071 0.7071 0 0">
+      <geom name="nut_side_neg_x" pos="-0.03325 0 0" size="0.0105 0.04375 0.01" type="box"
+            material="bmetal" contype="0" conaffinity="0" group="2"/>
+      <geom name="nut_side_pos_y" pos="0.0 0.03325 0" size="0.03125 0.0105 0.01" type="box"
+            material="bmetal" contype="0" conaffinity="0" group="2"/>
+      <geom name="nut_side_neg_y" pos="0.0 -0.03325 0" size="0.03125 0.0105 0.01" type="box"
+            material="bmetal" contype="0" conaffinity="0" group="2"/>
+      <geom name="nut_side_pos_x" pos="0.03325 0 0" size="0.0105 0.04375 0.01" type="box"
+            material="bmetal" contype="0" conaffinity="0" group="2"/>
+      <geom name="nut_handle" pos="0.054 0 0" size="0.02525 0.015875 0.01" type="box"
+            material="bmetal" contype="0" conaffinity="0" group="2"/>
+      <site rgba="1 0 0 1" size="0.004" pos="0 0 0" name="nut_center_site"/>
+      <site rgba="1 0 0 1" size="0.004" pos="0.054 0 0" name="nut_handle_site"/>
+    </body>
+
+    <!--
+      方形螺母2（与螺母1 完全相同的几何体，仅 pos/quat 不同）：
+        pos="0.2 0.65 0.85"：沿世界 X 轴相对螺母1 平移 20 cm，避免重叠。
+        quat="0.61237 0.61237 -0.35355 0.35355"：在螺母1 的 90°（绕 X）
+          翻转基础上，额外绕螺母自身法线自转 60°，把手朝向与螺母1 不同。
+    -->
+    <body name="square_nut_2" pos="0.2 0.65 0.85" quat="0.61237 0.61237 -0.35355 0.35355">
+      <geom name="nut2_side_neg_x" pos="-0.03325 0 0" size="0.0105 0.04375 0.01" type="box"
+            material="bmetal" contype="0" conaffinity="0" group="2"/>
+      <geom name="nut2_side_pos_y" pos="0.0 0.03325 0" size="0.03125 0.0105 0.01" type="box"
+            material="bmetal" contype="0" conaffinity="0" group="2"/>
+      <geom name="nut2_side_neg_y" pos="0.0 -0.03325 0" size="0.03125 0.0105 0.01" type="box"
+            material="bmetal" contype="0" conaffinity="0" group="2"/>
+      <geom name="nut2_side_pos_x" pos="0.03325 0 0" size="0.0105 0.04375 0.01" type="box"
+            material="bmetal" contype="0" conaffinity="0" group="2"/>
+      <geom name="nut2_handle" pos="0.054 0 0" size="0.02525 0.015875 0.01" type="box"
+            material="bmetal" contype="0" conaffinity="0" group="2"/>
+      <site rgba="1 0 0 1" size="0.004" pos="0 0 0" name="nut2_center_site"/>
+      <site rgba="1 0 0 1" size="0.004" pos="0.054 0 0" name="nut2_handle_site"/>
+    </body>
+
+    <!--
+      圆形螺母（Round Nut，几何数据取自 arm_calib/round-nut.xml：4 个
+      十字排列 + 4 个绕 Z 轴旋转 45°（axisangle="0 0 1 0.785398"）排列的
+      长方体拼出八边形近似圆形，另加 1 个把手长方体，与
+      06_convert_nut_mesh_for_foundationpose.py --xml round-nut.xml 转换出的
+      nut_mesh/round_nut_textured_simple.obj 局部坐标系严格对齐）：
+        pos="-0.25 0.65 0.85"：沿世界 X 轴平移到 square_nut 的另一侧，
+          与 square_nut（world x ∈ [-0.044, 0.079]）、square_nut_2
+          （world x ∈ [0.140, 0.260]）均不重叠。
+        quat="0.35355 0.35355 -0.61237 0.61237"：与 square_nut 一样先绕
+          X 轴 +90° 使正面朝向相机，再额外绕自身法线自转 120°，把手朝向
+          与另外两个方形螺母均不同。
+    -->
+    <body name="round_nut" pos="-0.25 0.65 0.85" quat="0.35355 0.35355 -0.61237 0.61237">
+      <geom name="round_nut_cross_neg_x" pos="-0.04245 0 0" size="0.01125 0.0225 0.01" type="box"
+            material="smetal_plain" contype="0" conaffinity="0" group="2"/>
+      <geom name="round_nut_cross_pos_x" pos="0.04245 0 0" size="0.01125 0.0225 0.01" type="box"
+            material="smetal_plain" contype="0" conaffinity="0" group="2"/>
+      <geom name="round_nut_cross_neg_y" pos="0 -0.04245 0" size="0.0225 0.01125 0.01" type="box"
+            material="smetal_plain" contype="0" conaffinity="0" group="2"/>
+      <geom name="round_nut_cross_pos_y" pos="0 0.04245 0" size="0.0225 0.01125 0.01" type="box"
+            material="smetal_plain" contype="0" conaffinity="0" group="2"/>
+      <geom name="round_nut_diag_neg_neg" pos="-0.03 -0.03 0" size="0.01125 0.0225 0.01"
+            axisangle="0 0 1 0.785398" type="box" material="smetal_plain" contype="0" conaffinity="0" group="2"/>
+      <geom name="round_nut_diag_pos_pos" pos="0.03 0.03 0" size="0.01125 0.0225 0.01"
+            axisangle="0 0 1 0.785398" type="box" material="smetal_plain" contype="0" conaffinity="0" group="2"/>
+      <geom name="round_nut_diag_pos_neg" pos="0.03 -0.03 0" size="0.0225 0.01125 0.01"
+            axisangle="0 0 1 0.785398" type="box" material="smetal_plain" contype="0" conaffinity="0" group="2"/>
+      <geom name="round_nut_diag_neg_pos" pos="-0.03 0.03 0" size="0.0225 0.01125 0.01"
+            axisangle="0 0 1 0.785398" type="box" material="smetal_plain" contype="0" conaffinity="0" group="2"/>
+      <geom name="round_nut_handle" pos="0.06 0 0" size="0.02525 0.015875 0.01" type="box"
+            material="smetal_plain" contype="0" conaffinity="0" group="2"/>
+      <site rgba="1 0 0 1" size="0.004" pos="0 0 0" name="round_nut_center_site"/>
+      <site rgba="1 0 0 1" size="0.004" pos="0.06 0 0" name="round_nut_handle_site"/>
+    </body>
+
+    <!--
+    ──────────────────────────────────────────────────────────────────
+    【机械臂底座 base_link】
+      位置：世界坐标 (0.0, -0.5, 0.42)
+        → X=0   ：底座与世界原点 X 方向对齐
+        → Y=-0.5：底座在世界原点往后 0.5 m（-Y 方向）
+        → Z=0.42：底座底面距地面 42 cm（安装在台面上）
+      无旋转（底座坐标系与世界坐标系方向相同）
+      无关节（固定在世界中，不能运动）
+    ──────────────────────────────────────────────────────────────────
+    -->
+    <body name="base_link" pos="0.0 -0.5 0.42">
+      <inertial pos="-0.000648 -0.000166 0.084487" quat="0.999294 0.00139618 -0.0118387 0.035636" mass="1.697"
+        diaginertia="0.00462407 0.00449437 0.00207755"/>
+      <geom class="visual" mesh="base_link"/>
+      <geom class="collision" mesh="base_link"/>
+      <!--
+        ── 肩部连杆 shoulder_link ──────────────────────────────────────
+          pos="0 0 0.15643"：在底座坐标系中，沿 +Z（向上）偏移 15.6 cm
+                             即肩关节位于底座正上方 15.6 cm 处
+          quat="0 1 0 0"：绕 X 轴旋转 180°，使 shoulder_link 的 Z 轴
+                          翻转为指向 -Z（向下）方向。
+                          → 关节1 绕此 Z 轴旋转 = 绕竖直轴旋转（腰部左右转）
+          joint_1：无角度限制，可连续旋转 360°（腰转）
+      -->
+      <body name="shoulder_link" pos="0 0 0.15643" quat="0 1 0 0">
+        <inertial pos="-2.3e-05 -0.010364 -0.07336" quat="0.707051 0.0451246 -0.0453544 0.704263" mass="1.3773"
+          diaginertia="0.00488868 0.00457 0.00135132"/>
+        <joint name="joint_1"/>
+        <geom class="visual" mesh="shoulder_link"/>
+        <geom class="collision" mesh="shoulder_link"/>
+        <!--
+          ── 大臂上段 half_arm_1_link ──────────────────────────────────
+            pos="0 0.005375 -0.12838"：在 shoulder_link 坐标系中
+              → Y=+0.005375：沿肩部 Y 轴偏移 5.4 mm（小偏心）
+              → Z=-0.12838 ：沿肩部 -Z 偏移 12.8 cm（shoulder_link 的Z朝下，
+                             所以这里是"往下" 12.8 cm）
+            quat="1 1 0 0"：绕 X 轴旋转 +90°（归一化后 w=qx=√2/2）
+              → 使 half_arm_1_link 的 Z 轴转向 -Y 方向
+              → joint_2 绕此轴旋转 = 大臂前后俯仰
+            joint_2：限位 ±2.24 rad（约 ±128°）
+        -->
+        <body name="half_arm_1_link" pos="0 0.005375 -0.12838" quat="1 1 0 0">
+          <inertial pos="-4.4e-05 -0.09958 -0.013278" quat="0.482348 0.516286 -0.516862 0.483366" mass="1.1636"
+            diaginertia="0.0113017 0.011088 0.00102532"/>
+          <joint name="joint_2" range="-2.24 2.24"/>
+          <geom class="visual" mesh="half_arm_1_link"/>
+          <geom class="collision" mesh="half_arm_1_link"/>
+          <!--
+            ── 大臂下段 half_arm_2_link ────────────────────────────────
+              pos="0 -0.21038 -0.006375"：在 half_arm_1 坐标系中
+                → Y=-0.21038：沿 half_arm_1 的 -Y 方向偏移 21 cm（大臂长度）
+                → Z=-0.006375：沿 -Z 方向 6.4 mm 的小偏心
+              quat="1 -1 0 0"：绕 X 轴旋转 -90°（与上一段方向相反）
+                → 使 Z 轴转向 +Y 方向，恢复"向上"的方向分量
+              joint_3：大臂扭转（沿大臂纵轴自转），无角度限制
+          -->
+          <body name="half_arm_2_link" pos="0 -0.21038 -0.006375" quat="1 -1 0 0">
+            <inertial pos="-4.4e-05 -0.006641 -0.117892" quat="0.706144 0.0213722 -0.0209128 0.707437" mass="1.1636"
+              diaginertia="0.0111633 0.010932 0.00100671"/>
+            <joint name="joint_3"/>
+            <geom class="visual" mesh="half_arm_2_link"/>
+            <geom class="collision" mesh="half_arm_2_link"/>
+            <!--
+              ── 小臂 forearm_link ────────────────────────────────────
+                pos="0 0.006375 -0.21038"：在 half_arm_2 坐标系中
+                  → Y=+0.006375：小偏心 6.4 mm
+                  → Z=-0.21038 ：沿 -Z 方向偏移 21 cm（即大臂第二段长度）
+                quat="1 1 0 0"：绕 X 轴 +90°，使 Z 轴再次对准俯仰方向
+                joint_4：小臂俯仰，限位 ±2.57 rad（约 ±147°）
+            -->
+            <body name="forearm_link" pos="0 0.006375 -0.21038" quat="1 1 0 0">
+              <inertial pos="-1.8e-05 -0.075478 -0.015006" quat="0.483678 0.515961 -0.515859 0.483455" mass="0.9302"
+                diaginertia="0.00834839 0.008147 0.000598606"/>
+              <joint name="joint_4" range="-2.57 2.57"/>
+              <geom class="visual" mesh="forearm_link"/>
+              <geom class="collision" mesh="forearm_link"/>
+              <!--
+              ── 腕部第1段 spherical_wrist_1_link ────────────────────
+                pos="0 -0.20843 -0.006375"：在 forearm_link 坐标系中
+                  → Y=-0.20843：沿 forearm 的 -Y 偏移 20.8 cm（小臂长度）
+                  → Z=-0.006375：小偏心
+                quat="1 -1 0 0"：绕 X 轴 -90°，使 Z 轴转向 +Y
+                joint_5：腕部偏摆（左右摆动），无角度限制
+              -->
+              <body name="spherical_wrist_1_link" pos="0 -0.20843 -0.006375" quat="1 -1 0 0">
+                <inertial pos="1e-06 -0.009432 -0.063883" quat="0.703558 0.0707492 -0.0707492 0.703558" mass="0.6781"
+                  diaginertia="0.00165901 0.001596 0.000346988"/>
+                <joint name="joint_5"/>
+                <geom class="visual" mesh="spherical_wrist_1_link"/>
+                <geom class="collision" mesh="spherical_wrist_1_link"/>
+                <!--
+                ── 腕部第2段 spherical_wrist_2_link ────────────────────
+                  pos="0 0.00017505 -0.10593"：在 wrist_1 坐标系中
+                    → Z=-0.10593：沿 -Z 方向偏移 10.6 cm（腕部第1段长度）
+                    → Y=+0.00017505：可忽略的微小偏心
+                  quat="1 1 0 0"：绕 X 轴 +90°，使 Z 轴转回俯仰方向
+                  joint_6：腕部俯仰，限位 ±2.09 rad（约 ±120°）
+                -->
+                <body name="spherical_wrist_2_link" pos="0 0.00017505 -0.10593" quat="1 1 0 0">
+                  <inertial pos="1e-06 -0.045483 -0.00965" quat="0.44426 0.550121 -0.550121 0.44426" mass="0.6781"
+                    diaginertia="0.00170087 0.001641 0.00035013"/>
+                  <joint name="joint_6" range="-2.09 2.09"/>
+                  <geom class="visual" mesh="spherical_wrist_2_link"/>
+                  <geom class="collision" mesh="spherical_wrist_2_link"/>
+                  <!--
+                  ── 末端法兰 bracelet_link ───────────────────────────
+                    pos="0 -0.10593 -0.00017505"：在 wrist_2 坐标系中
+                      → Y=-0.10593：沿 -Y 偏移 10.6 cm（腕部第2段长度）
+                    quat="1 -1 0 0"：绕 X 轴 -90°，使 Z 轴最终对准末端出力方向
+                    joint_7：末端旋转（腕部绕纵轴自转），无角度限制
+                    这是机械臂最末端的连杆，D435i 相机、Robotiq 夹爪和 TCP
+                    都固连在此处。
+                  -->
+                  <body name="bracelet_link" pos="0 -0.10593 -0.00017505" quat="1 -1 0 0">
+                    <inertial pos="0.000281 0.011402 -0.029798" quat="0.394358 0.596779 -0.577293 0.393789" mass="0.5"
+                      diaginertia="0.000657336 0.000587019 0.000320645"/>
+                    <joint name="joint_7"/>
+                    <geom class="visual" mesh="bracelet_with_vision_link"/>
+                    <geom class="collision" mesh="bracelet_with_vision_link"/>
+                    <!-- 腕部内置简化相机（仅供快速预览用，非标定用相机）
+                         pos：相对 bracelet_link 偏移 5.6 cm（-Y）和 5.8 cm（-Z）
+                         quat="0 0 0 1"：相机朝向 = 末端 -Z 方向（向下/向前） -->
+                    <camera name="wrist" pos="0 -0.05639 -0.058475" quat="0 0 0 1" fovy="41.83792730009236"
+                      resolution="640 480"/>
+                    <!-- TCP（工具中心点）标记：位于末端法兰正前方 6.2 cm 处
+                         quat="0 1 0 0"：site 的 Z 轴指向 bracelet_link 的 +Z（末端出力方向） -->
+                    <site name="pinch_site" pos="0 0 -0.061525" quat="0 1 0 0"/>
+                    <!-- D435i 安装点标记（便于在代码中查询相机安装位置） -->
+                    <site name="d435i_mount_site" pos="0 -0.056  -0.060"/>
+                    <!--
+                    ── D435i 相机体 d435i_camera_body ──────────────────
+                      pos="0 -0.056 -0.060"：相机固连在 bracelet_link 上
+                        → Y=-0.056：向法兰 -Y 方向偏移 5.6 cm
+                        → Z=-0.060：向法兰 -Z 方向偏移 6.0 cm
+                      quat="0 1 0 0"：绕 X 轴翻转 180°，使相机的"镜头朝前"
+                        方向对应机械臂末端向外的方向
+
+                      内含两个虚拟相机：
+                        "wrist"          → 简化相机（与末端固连，用于快速预览）
+                        "d435i_rgb_camera" → RGB 相机（fovy=42.5°，640×480，
+                                             用于手眼标定图像采集）
+
+                      RGB 相机光心偏移（相对 d435i_camera_body）：
+                        pos="0.0325 0 -0.0036"
+                        → X=+0.0325：RGB 镜头在相机体右侧 3.25 cm
+                        → Z=-0.0036：微小纵向偏移
+                        → quat="0 1 0 0"：相机朝前（镜头朝 +Z 方向的投影）
+                    -->
+                    <body name="d435i_camera_body" pos="0 -0.056 -0.060" quat="0 1 0 0" childclass="d435i">
+                      <geom mesh="d435i_0" material="IR_Lens" class="d435i_visual"/>
+                      <geom mesh="d435i_1" material="IR_Emitter_Lens" class="d435i_visual"/>
+                      <geom mesh="d435i_2" material="IR_Rim" class="d435i_visual"/>
+                      <geom mesh="d435i_3" material="IR_Lens" class="d435i_visual"/>
+                      <geom mesh="d435i_4" material="Cameras_Gray" class="d435i_visual"/>
+                      <geom mesh="d435i_5" material="Black_Acrylic" class="d435i_visual"/>
+                      <geom mesh="d435i_6" material="Black_Acrylic" class="d435i_visual"/>
+                      <geom mesh="d435i_7" material="RGB_Pupil" class="d435i_visual"/>
+                      <geom mesh="d435i_8" mass="0.072" material="Metal_Casing" class="d435i_visual"/>
+                      <geom class="d435i_collision" type="capsule" mesh="d435i_8"/>
+                      <!-- RGB 光心位置标记（site），用于代码中获取相机在世界系中的位姿 -->
+                      <site name="d435i_rgb_optical_frame" pos="0.0325 0 -0.0036" quat="0 1 0 0"/>
+                      <!-- 手眼标定用 RGB 相机：fovy=42.5°，640×480
+                           采集脚本 00_collect_calib_data_mujoco.py 使用此相机渲染图像 -->
+                      <camera name="d435i_rgb_camera" pos="0.0325 0 -0.0036" quat="0 1 0 0" fovy="42.5"
+                        resolution="640 480"/>
+                    </body>
+
+                    <!--
+                    ════════════════════════════════════════════════════
+                    ── Robotiq 2F-85 夹爪（来自 robotiq_gripper_85.xml）──
+                      挂载于 bracelet_link 下，pos/quat 与本文件中
+                      "pinch_site" 完全一致（pos="0 0 -0.061525"
+                      quat="0 1 0 0"），即认为夹爪安装面与法兰工具坐标系
+                      的 TCP 标记重合，法兰局部 -Z 方向即为夹爪的接近方向。
+                      如需与实际 CAD/标定结果对齐，调整此处 pos/quat 并
+                      同步更新 tcp_flange.json 中的 T_tcp_flange。
+                    ════════════════════════════════════════════════════
+                    -->
+                    <body name="robotiq_85_adapter_link" pos="0 0 -0.061525" quat="0 1 0 0">
+                      <site name="ft_frame" pos="0 0 0" size="0.01 0.01 0.01" rgba="1 0 0 1" type="sphere" group="1"/>
+                      <!-- 夹爪 TCP（两指闭合中心近似位置），沿夹爪自身 Z 轴前伸 14.5 cm -->
+                      <body name="eef" pos="0 0 0.145" quat="0.707105 0 0 -0.707105">
+                        <site name="grip_site" pos="0 0 0" size="0.01 0.01 0.01" rgba="1 0 0 0.5" type="sphere" group="1"/>
+                        <site name="ee_x" pos="0.1 0 0" size="0.005 .1" quat="0.707105 0 0.707108 0" rgba="1 0 0 0" type="cylinder" group="1"/>
+                        <site name="ee_y" pos="0 0.1 0" size="0.005 .1" quat="0.707105 0.707108 0 0" rgba="0 1 0 0" type="cylinder" group="1"/>
+                        <site name="ee_z" pos="0 0 0.1" size="0.005 .1" quat="1 0 0 0" rgba="0 0 1 0" type="cylinder" group="1"/>
+                        <site name="grip_site_cylinder" pos="0 0 0" size="0.005 10" rgba="0 1 0 0.3" type="cylinder" group="1"/>
+                      </body>
+                      <inertial pos="0 0 0" mass="0.01" diaginertia="0.001 0.001 0.001"/>
+                      <geom type="mesh" contype="0" conaffinity="0" group="1" rgba="0.1 0.1 0.1 1" name="hand_visual" mesh="robotiq_arg2f_base_link_vis"/>
+                      <geom type="mesh" group="0" rgba="0.1 0.1 0.1 1" mesh="robotiq_arg2f_base_link" name="hand_collision"/>
+                      <body name="left_outer_knuckle" pos="0 -0.0306011 0.054904" quat="0 0 0 1">
+                        <inertial pos="0.000163875 0.0554825 -0.0100755" quat="0.920541 0.390623 -0.00362953 0.00231744" mass="0.0311462" diaginertia="5.11372e-05 4.89464e-05 4.95906e-06"/>
+                        <joint name="finger_joint" pos="0 0 0" axis="1 0 0" limited="true" range="0 0.8"/>
+                        <geom type="mesh" contype="0" conaffinity="0" group="1" rgba="0.792157 0.819608 0.933333 1" name="left_outer_knuckle_visual" mesh="robotiq_arg2f_85_outer_knuckle_vis"/>
+                        <geom type="mesh" group="0" rgba="0.792157 0.819608 0.933333 1" mesh="robotiq_arg2f_85_outer_knuckle" name="left_outer_knuckle_collision" solref="0.01 0.25"/>
+                        <geom pos="0 0.0315 -0.0041" type="mesh" contype="0" conaffinity="0" group="1" rgba="0.1 0.1 0.1 1" name="left_outer_finger_visual" mesh="robotiq_arg2f_85_outer_finger_vis"/>
+                        <geom pos="0 0.0315 -0.0041" type="mesh" group="0" rgba="0.1 0.1 0.1 1" mesh="robotiq_arg2f_85_outer_finger" name="left_outer_finger_collision" solref="0.01 0.25"/>
+                        <body name="left_inner_finger" pos="0 0.0376 0.043">
+                          <inertial pos="0.000199506 0.0032692 0.00175282" quat="0.933621 0.35825 -0.00273441 0.00104851" mass="0.0156391" diaginertia="1.57977e-05 1.51089e-05 1.4647e-06"/>
+                          <joint name="left_inner_finger_joint" pos="0 0 0" axis="1 0 0" limited="true" range="-0.8757 0.8757"/>
+                          <geom type="mesh" contype="0" conaffinity="0" group="1" rgba="0.1 0.1 0.1 1" name="left_inner_finger_visual" mesh="robotiq_arg2f_85_inner_finger_vis"/>
+                          <geom type="mesh" group="0" rgba="0.1 0.1 0.1 1" mesh="robotiq_arg2f_85_inner_finger" name="left_inner_finger_collision" solref="0.01 0.25"/>
+                          <geom size="0.011 0.003175 0.01875" pos="0 -0.0220203 0.03242" type="box" contype="0" conaffinity="0" group="1" rgba="0.9 0.9 0.9 1" name="left_fingertip_visual"/>
+                          <geom size="0.011 0.003175 0.01875" pos="0 -0.0220203 0.03242" type="box" group="0" rgba="0.9 0.9 0.9 1" name="left_fingertip_collision" solref="0.01 0.25"/>
+                          <geom size="0.010 0.001 0.01675" pos="0 -0.0245203 0.03242" type="box" group="0" name="left_fingerpad_collision"/>
+                        </body>
+                      </body>
+                      <body name="left_inner_knuckle" pos="0 -0.0127 0.06142" quat="0 0 0 1">
+                        <inertial pos="0.000123012 0.0507851 0.00103969" quat="0.497203 0.502496 -0.507943 0.492221" mass="0.0271177" diaginertia="2.83809e-05 2.61936e-05 2.81319e-06"/>
+                        <joint name="left_inner_knuckle_joint" pos="0 0 0" axis="1 0 0" limited="true" range="0 0.8757"/>
+                        <geom type="mesh" contype="0" conaffinity="0" group="1" rgba="0.1 0.1 0.1 1" name="left_inner_knuckle_visual" mesh="robotiq_arg2f_85_inner_knuckle_vis"/>
+                        <geom type="mesh" group="0" rgba="0.1 0.1 0.1 1" mesh="robotiq_arg2f_85_inner_knuckle" name="left_inner_knuckle_collision"/>
+                      </body>
+                      <body name="right_outer_knuckle" pos="0 0.0306011 0.054904">
+                        <inertial pos="0.000163875 0.0554825 -0.0100755" quat="0.920541 0.390623 -0.00362953 0.00231744" mass="0.0311462" diaginertia="5.11372e-05 4.89464e-05 4.95906e-06"/>
+                        <joint name="right_outer_knuckle_joint" pos="0 0 0" axis="1 0 0" limited="true" range="0 0.8"/>
+                        <geom type="mesh" contype="0" conaffinity="0" group="1" rgba="0.792157 0.819608 0.933333 1" name="right_outer_knuckle_visual" mesh="robotiq_arg2f_85_outer_knuckle_vis"/>
+                        <geom type="mesh" group="0" rgba="0.792157 0.819608 0.933333 1" mesh="robotiq_arg2f_85_outer_knuckle" name="right_outer_knuckle_collision" solref="0.01 0.25"/>
+                        <geom pos="0 0.0315 -0.0041" type="mesh" contype="0" conaffinity="0" group="1" rgba="0.1 0.1 0.1 1" name="right_outer_finger_visual" mesh="robotiq_arg2f_85_outer_finger_vis"/>
+                        <geom pos="0 0.0315 -0.0041" type="mesh" group="0" rgba="0.1 0.1 0.1 1" mesh="robotiq_arg2f_85_outer_finger" name="right_outer_finger_collision" solref="0.01 0.25"/>
+                        <body name="right_inner_finger" pos="0 0.0376 0.043">
+                          <inertial pos="0.000199506 0.0032692 0.00175282" quat="0.933621 0.35825 -0.00273441 0.00104851" mass="0.0156391" diaginertia="1.57977e-05 1.51089e-05 1.4647e-06"/>
+                          <joint name="right_inner_finger_joint" pos="0 0 0" axis="1 0 0" limited="true" range="-0.8757 0.8757"/>
+                          <geom type="mesh" contype="0" conaffinity="0" group="1" rgba="0.1 0.1 0.1 1" name="right_inner_finger_visual" mesh="robotiq_arg2f_85_inner_finger_vis"/>
+                          <geom type="mesh" group="0" rgba="0.1 0.1 0.1 1" mesh="robotiq_arg2f_85_inner_finger" name="right_inner_finger_collision" solref="0.01 0.25"/>
+                          <geom size="0.011 0.003175 0.01875" pos="0 -0.0220203 0.03242" type="box" contype="0" conaffinity="0" group="1" rgba="0.9 0.9 0.9 1" name="right_fingertip_visual"/>
+                          <geom size="0.011 0.003175 0.01875" pos="0 -0.0220203 0.03242" type="box" group="0" rgba="0.9 0.9 0.9 1" name="right_fingertip_collision" solref="0.01 0.25"/>
+                          <geom size="0.010 0.001 0.01675" pos="0 -0.0245203 0.03242" type="box" group="0" name="right_fingerpad_collision"/>
+                        </body>
+                      </body>
+                      <body name="right_inner_knuckle" pos="0 0.0127 0.06142">
+                        <inertial pos="0.000123012 0.0507851 0.00103969" quat="0.497203 0.502496 -0.507943 0.492221" mass="0.0271177" diaginertia="2.83809e-05 2.61936e-05 2.81319e-06"/>
+                        <joint name="right_inner_knuckle_joint" pos="0 0 0" axis="1 0 0" limited="true" range="0 0.8757"/>
+                        <geom type="mesh" contype="0" conaffinity="0" group="1" rgba="0.1 0.1 0.1 1" name="right_inner_knuckle_visual" mesh="robotiq_arg2f_85_inner_knuckle_vis"/>
+                        <geom type="mesh" group="0" rgba="0.1 0.1 0.1 1" mesh="robotiq_arg2f_85_inner_knuckle" name="right_inner_knuckle_collision"/>
+                      </body>
+                    </body>
+                    <!-- Robotiq 2F-85 夹爪子树结束 -->
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <!--
+  ──────────────────────────────────────────────────────────────────
+  【执行器（actuator）】
+  每个机械臂关节对应一个位置控制执行器；末尾追加 Robotiq 2F-85 的两个
+  手指位置执行器（欠驱动夹爪，通过 tendon 耦合传动即可驱动整根手指）。
+  给 data.ctrl[i] 写入目标角度（弧度），执行器输出力矩驱动关节到位。
+  ctrlrange 限制了目标角度的输入范围（弧度），与关节 range 对应。
+  ──────────────────────────────────────────────────────────────────
+  -->
+  <actuator>
+    <position class="large_actuator" name="joint_1" joint="joint_1"/><!-- 腰转，无限位 -->
+    <position class="large_actuator" name="joint_2" joint="joint_2" ctrlrange="-2.2497294058206907 2.2497294058206907"/><!-- 大臂俯仰，约±128.9° -->
+    <position class="large_actuator" name="joint_3" joint="joint_3"/><!-- 大臂扭转，无限位 -->
+    <position class="large_actuator" name="joint_4" joint="joint_4" ctrlrange="-2.5795966344476193 2.5795966344476193"/><!-- 小臂俯仰，约±147.8° -->
+    <position class="small_actuator" name="joint_5" joint="joint_5"/><!-- 腕偏摆，无限位 -->
+    <position class="small_actuator" name="joint_6" joint="joint_6" ctrlrange="-2.0996310901491784 2.0996310901491784"/><!-- 腕俯仰，约±120.3° -->
+    <position class="small_actuator" name="joint_7" joint="joint_7"/><!-- 腕旋转，无限位 -->
+    <!-- Robotiq 2F-85 夹爪：两个手指各一个位置执行器，ctrlrange 对应张开(0)~闭合(0.8) -->
+    <position name="finger_1" ctrllimited="true" kp="20" joint="finger_joint" ctrlrange="0 0.8"/>
+    <position name="finger_2" ctrllimited="true" kp="20" joint="right_outer_knuckle_joint" ctrlrange="0 0.8"/>
+  </actuator>
+
+  <!--
+  ──────────────────────────────────────────────────────────────────
+  【传感器（sensor）】—— 来自 robotiq_gripper_85.xml
+  力/力矩传感器，安装于夹爪基座的 "ft_frame" site 处，用于读取
+  夹爪-末端法兰之间受到的接触力/力矩（如需在仿真中做力控/接触检测）。
+  ──────────────────────────────────────────────────────────────────
+  -->
+  <sensor>
+    <force name="force_ee" site="ft_frame"/>
+    <torque name="torque_ee" site="ft_frame"/>
+  </sensor>
+
+  <!--
+  ──────────────────────────────────────────────────────────────────
+  【关键帧（keyframe）】
+  预设的关节角度快照，方便在仿真启动时直接跳转到指定姿态。
+  qpos：机械臂 7 个关节角度（弧度）+ 夹爪 6 个自由度（4 个耦合/2 个驱动关节，
+        均置 0 表示夹爪完全张开），顺序对应 joint_1~7 之后依次为
+        finger_joint, left_inner_finger_joint, left_inner_knuckle_joint,
+        right_outer_knuckle_joint, right_inner_finger_joint,
+        right_inner_knuckle_joint。
+  ctrl：机械臂 7 个关节 + 夹爪 2 个执行器（finger_1/finger_2），置 0 表示张开。
+  ──────────────────────────────────────────────────────────────────
+  -->
+  <keyframe>
+    <!-- home：机械臂的标准初始姿态，臂体抬起、略微向前伸展，相机朝向前下方；夹爪张开 -->
+    <key name="home"
+      qpos="0 0.26179939 3.14159265 -2.26892803 0 0.95993109 1.57079633  0 0 0 0 0 0"
+      ctrl="0 0.26179939 3.14159265 -2.26892803 0 0.95993109 1.57079633  0 0"/>
+    <!-- retract：收缩姿态，机械臂紧收，占用空间最小；夹爪张开 -->
+    <key name="retract"
+      qpos="0 -0.34906585 3.14159265 -2.54818071 0 -0.87266463 1.57079633  0 0 0 0 0 0"
+      ctrl="0 -0.34906585 3.14159265 -2.54818071 0 -0.87266463 1.57079633  0 0"/>
+  </keyframe>
+</mujoco>
