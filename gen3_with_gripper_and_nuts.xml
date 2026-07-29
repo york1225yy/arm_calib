@@ -47,6 +47,13 @@
   <!-- 物理积分器：implicitfast 是隐式欧拉快速近似，适合刚体位置控制仿真 -->
   <option integrator="implicitfast"/>
 
+  <!-- 离屏渲染帧缓冲大小：09_pick_and_place_nuts_mujoco.py 用 mujoco.Renderer
+       保存高分辨率（默认 1280x720）视频时需要此处声明足够大的 offwidth/offheight，
+       否则默认帧缓冲仅 640x480，Renderer 初始化会报错。 -->
+  <visual>
+    <global offwidth="1920" offheight="1080"/>
+  </visual>
+
   <!--
   ──────────────────────────────────────────────────────────────────
   【默认属性继承（default）】
@@ -193,15 +200,66 @@
           rgba="0.8 0.8 0.8 1" contype="1" conaffinity="1" group="2"/>
 
     <!--
+      工作台（Table，木纹棕色实体箱）：
+        承载 3 个螺母的初始摆放区（y≈0.15）与抓取放置目标区（y≈-0.05）。
+        注：螺母的世界坐标（尤其 y 方向）相比该场景原始设计（用于远距离
+        相机大视野采集，y≈0.65，距机械臂基座 base_link(y=-0.5) 约 1.2~1.3 m）
+        已整体平移拉近至机械臂基座附近——Kinova Gen3 7 轴臂的最大可达范围
+        约 0.9 m，若保留原摆放距离，09_pick_and_place_nuts_mujoco.py 中的
+        逆运动学将无法收敛到抓取目标（超出工作空间）。因此本场景把螺母/桌子
+        /放置标记整体沿 -Y 方向平移，使其落入机械臂实际可达范围内，同时保持
+        3 个螺母之间、初始区与放置区之间的相对布局不变。
+        故台面沿世界 Y 方向覆盖 [-0.20, 0.30]（中心 y=0.05，半宽 0.25），
+        沿世界 X 方向覆盖 [-0.45, 0.45]（中心 x=0，半宽 0.45）。
+
+        【台面高度说明——务必与螺母的实际竖直范围对齐，而非想当然按螺母中心
+        z 减去局部 size.z 估算】：square_nut/square_nut_2/round_nut 的各个
+        box 子 geom 是在螺母局部坐标系下定义的（size 为局部 x/y/z 半长），但
+        螺母 body 本身带有 quat="0.7071 0.7071 0 0"（绕世界 X 轴转 90°）这样
+        的旋转——90° 旋转会把螺母局部 Y 轴（部分子 geom 半宽达 0.04375 m）
+        映射到世界 Z 轴方向，而不是原来看起来很薄的局部 Z 轴半宽 0.01 m。
+        也就是说螺母在世界 Z 方向的实际半高约为 0.04375 m（远大于 0.01 m），
+        以螺母中心 z=0.85 计算，螺母下边缘实际低至 world z ≈ 0.85-0.04375
+        = 0.8063 m。因此台面上表面必须显著低于 0.8063，这里取台面上表面
+        z=0.78（台面 body 中心 z=0.76，半厚 0.02），留出约 26 mm 安全间隙，
+        避免螺母与桌面在初始化时就发生几何相交（此前台面上表面误取 0.84，
+        与螺母实际竖直范围 [0.8063, 0.8938] 有约 60 mm 的重叠）。
+        固定 body（无关节），仅用于视觉呈现和演示场景合理性，不参与本脚本的抓取运动学计算。
+    -->
+    <body name="table" pos="0 0.05 0.76">
+      <geom name="table_top" type="box" size="0.45 0.25 0.02"
+            rgba="0.55 0.38 0.22 1" contype="1" conaffinity="1" group="2"/>
+      <geom name="table_leg_1" type="box" pos="0.40 -0.20 -0.39" size="0.02 0.02 0.37"
+            rgba="0.35 0.24 0.14 1" contype="0" conaffinity="0" group="2"/>
+      <geom name="table_leg_2" type="box" pos="0.40 0.20 -0.39" size="0.02 0.02 0.37"
+            rgba="0.35 0.24 0.14 1" contype="0" conaffinity="0" group="2"/>
+      <geom name="table_leg_3" type="box" pos="-0.40 -0.20 -0.39" size="0.02 0.02 0.37"
+            rgba="0.35 0.24 0.14 1" contype="0" conaffinity="0" group="2"/>
+      <geom name="table_leg_4" type="box" pos="-0.40 0.20 -0.39" size="0.02 0.02 0.37"
+            rgba="0.35 0.24 0.14 1" contype="0" conaffinity="0" group="2"/>
+    </body>
+
+    <!--
       方形螺母1（Square Nut，几何数据取自 mujoco/robosuite 的 square-nut.xml，
       与 arm_calib/square-nut.xml、06_convert_nut_mesh_for_foundationpose.py
       使用的是完全相同的一组 box 数值，因此该 body 的局部坐标系
       与转换出的 FoundationPose 网格坐标系严格一致）。
       quat="0.7071 0.7071 0 0" 表示绕 X 轴旋转 90°，使螺母正面朝向 -Y（面向相机）
-      螺母本身无关节、固连于世界坐标系，其 world 位姿只由这里的 pos/quat 决定，
-      可在采集脚本中直接通过 mj_name2id + data.xpos/xmat 读取，作为姿态估计的真值。
+
+      <freejoint> 说明：与该场景原始版本（gen3_with_two_nuts_and_round_nut.xml，
+      仅用于相机采集/姿态验证）不同，这里给螺母加上了自由关节（6-DoF：3 平移
+      + 4 元数旋转），使其可以在 09_pick_and_place_nuts_mujoco.py 的抓取动画
+      中被真正"拿起并移动"——若不加自由关节，螺母是固连在世界坐标系的静态
+      body，机械臂夹爪即使闭合到位，螺母也不会跟随移动（这正是之前视频里
+      "爪子已经抓到但螺母没被真正抓起来"的根本原因：光靠 IK 让夹爪到位不会
+      自动产生任何刚体约束/抓取关系，MuJoCo 不会凭空知道"夹爪闭合=抓住了
+      螺母"，必须显式建模抓取关系）。本文件采用最简单直接的方式：给螺母加
+      自由关节后，由 09 脚本在抓取阶段（grasp 之后）每帧手动计算并写入螺母
+      应该跟随夹爪运动到的世界位姿（即"运动学抓取"，非真实物理接触力/摩擦力
+      约束，但对可视化演示已经足够直观）。
     -->
-    <body name="square_nut" pos="0.0 0.65 0.85" quat="0.7071 0.7071 0 0">
+    <body name="square_nut" pos="0.0 0.15 0.85" quat="0.7071 0.7071 0 0">
+      <freejoint name="square_nut_freejoint"/>
       <geom name="nut_side_neg_x" pos="-0.03325 0 0" size="0.0105 0.04375 0.01" type="box"
             material="bmetal" contype="0" conaffinity="0" group="2"/>
       <geom name="nut_side_pos_y" pos="0.0 0.03325 0" size="0.03125 0.0105 0.01" type="box"
@@ -222,7 +280,8 @@
         quat="0.61237 0.61237 -0.35355 0.35355"：在螺母1 的 90°（绕 X）
           翻转基础上，额外绕螺母自身法线自转 60°，把手朝向与螺母1 不同。
     -->
-    <body name="square_nut_2" pos="0.2 0.65 0.85" quat="0.61237 0.61237 -0.35355 0.35355">
+    <body name="square_nut_2" pos="0.2 0.15 0.85" quat="0.61237 0.61237 -0.35355 0.35355">
+      <freejoint name="square_nut_2_freejoint"/>
       <geom name="nut2_side_neg_x" pos="-0.03325 0 0" size="0.0105 0.04375 0.01" type="box"
             material="bmetal" contype="0" conaffinity="0" group="2"/>
       <geom name="nut2_side_pos_y" pos="0.0 0.03325 0" size="0.03125 0.0105 0.01" type="box"
@@ -250,7 +309,8 @@
           X 轴 +90° 使正面朝向相机，再额外绕自身法线自转 120°，把手朝向
           与另外两个方形螺母均不同。
     -->
-    <body name="round_nut" pos="-0.25 0.65 0.85" quat="0.35355 0.35355 -0.61237 0.61237">
+    <body name="round_nut" pos="-0.25 0.15 0.85" quat="0.35355 0.35355 -0.61237 0.61237">
+      <freejoint name="round_nut_freejoint"/>
       <geom name="round_nut_cross_neg_x" pos="-0.04245 0 0" size="0.01125 0.0225 0.01" type="box"
             material="smetal_plain" contype="0" conaffinity="0" group="2"/>
       <geom name="round_nut_cross_pos_x" pos="0.04245 0 0" size="0.01125 0.0225 0.01" type="box"
@@ -271,6 +331,23 @@
             material="smetal_plain" contype="0" conaffinity="0" group="2"/>
       <site rgba="1 0 0 1" size="0.004" pos="0 0 0" name="round_nut_center_site"/>
       <site rgba="1 0 0 1" size="0.004" pos="0.06 0 0" name="round_nut_handle_site"/>
+    </body>
+
+    <!--
+      放置目标区标记（仅供可视化参考，扁平色块，不参与碰撞）：
+        09_pick_and_place_nuts_mujoco.py 中把 3 个螺母分别从 y≈0.15 的初始位置
+        抓取后放置到 y≈-0.05 的目标区（x 坐标与各自初始位置保持一致），
+        这里用 3 个半透明彩色圆片在台面上标出对应目标落点，方便在 MuJoCo
+        可视化窗口中直观确认放置是否到位。
+    -->
+    <body name="place_marker_square_nut" pos="0.0 -0.05 0.841">
+      <geom type="cylinder" size="0.035 0.001" rgba="0.9 0.2 0.2 0.5" contype="0" conaffinity="0" group="2"/>
+    </body>
+    <body name="place_marker_square_nut_2" pos="0.2 -0.05 0.841">
+      <geom type="cylinder" size="0.035 0.001" rgba="0.2 0.6 0.9 0.5" contype="0" conaffinity="0" group="2"/>
+    </body>
+    <body name="place_marker_round_nut" pos="-0.25 -0.05 0.841">
+      <geom type="cylinder" size="0.035 0.001" rgba="0.2 0.9 0.3 0.5" contype="0" conaffinity="0" group="2"/>
     </body>
 
     <!--
@@ -570,13 +647,20 @@
   ──────────────────────────────────────────────────────────────────
   -->
   <keyframe>
-    <!-- home：机械臂的标准初始姿态，臂体抬起、略微向前伸展，相机朝向前下方；夹爪张开 -->
+    <!-- home：机械臂的标准初始姿态，臂体抬起、略微向前伸展，相机朝向前下方；夹爪张开。
+         注：自从给 3 个螺母加上 <freejoint> 后，完整 qpos 向量的长度和各关节
+         在数组中的排列顺序都发生了变化（螺母的自由关节在文档顺序上定义于
+         机械臂之前，其 7 个自由度会排在 qpos 数组最前面，而不是排在机械臂
+         7 个关节之后），手工按旧的"先臂后夹爪"顺序拼接 qpos 很容易出错。
+         因此这里不再显式指定 qpos（省略该属性时 MuJoCo 使用 qpos0 默认值，
+         对机械臂关节等价于全 0，对螺母自由关节等价于其 body 定义的 pos/quat，
+         即螺母仍在正确的初始位置），只保留 ctrl（机械臂关节目标角度，语义
+         不变，与执行器定义顺序 joint_1..7 一致，与 qpos 数组内部排列顺序
+         无关）。 -->
     <key name="home"
-      qpos="0 0.26179939 3.14159265 -2.26892803 0 0.95993109 1.57079633  0 0 0 0 0 0"
       ctrl="0 0.26179939 3.14159265 -2.26892803 0 0.95993109 1.57079633  0 0"/>
     <!-- retract：收缩姿态，机械臂紧收，占用空间最小；夹爪张开 -->
     <key name="retract"
-      qpos="0 -0.34906585 3.14159265 -2.54818071 0 -0.87266463 1.57079633  0 0 0 0 0 0"
       ctrl="0 -0.34906585 3.14159265 -2.54818071 0 -0.87266463 1.57079633  0 0"/>
   </keyframe>
 </mujoco>

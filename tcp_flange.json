@@ -1,12 +1,17 @@
 {
-  "description": "TCP（工具中心点，通常取 Robotiq 2F-85 两指闭合中心）相对末端法兰 bracelet_link 的固定变换 T_tcp_flange：p_flange = T_tcp_flange @ p_tcp。示例中为单位阵，即假设 TCP 与法兰重合（尚未做实际 TCP 标定/未知夹爪安装偏移时的占位值）。真实使用 Robotiq 2F-85 时，应把夹爪 CAD 给出的法兰->指尖偏移，或实测 TCP 标定结果，替换下面的矩阵。",
+  "description": "TCP（工具中心点，取 Robotiq 2F-85 两指闭合中心，对应 arm_calib/gen3_with_gripper_and_nuts.xml 中 body \"eef\"）相对末端法兰 bracelet_link 的固定变换 T_tcp_flange：p_flange = T_tcp_flange @ p_tcp。本矩阵不再是占位单位阵，而是直接由 gen3_with_gripper_and_nuts.xml 的运动学树结构算出（bracelet_link -> robotiq_85_adapter_link(pos=[0,0,-0.061525], quat=[0,1,0,0]) -> eef(pos=[0,0,0.145], quat=[0.707105,0,0,-0.707105])），用 MuJoCo 正向运动学在任意关节角/夹爪开合状态下计算 T_tcp_flange = inv(T_bracelet_world) @ T_eef_world 得到（因为 bracelet_link 与 eef 之间只有固定 body 嵌套、没有关节，结果与关节角/夹爪开合状态无关）。",
 
+  "xml_source": "gen3_with_gripper_and_nuts.xml",
   "gripper": "Robotiq 2F-85",
+  "flange_body": "bracelet_link",
+  "tcp_body": "eef",
+
+  "computation_note": "adapter 沿法兰局部 -Z 偏移 0.061525 m，eef 再沿 adapter 局部 +Z（即法兰局部 -Z 方向）偏移 0.145 m，合计 0.206525 m；同时 adapter/eef 相对法兰各自的四元数旋转使得 TCP 坐标系的 X/Y 轴相对法兰坐标系发生了互换，Z 轴反向（对应下方矩阵的旋转部分）。",
 
   "T_tcp_flange": [
-    [1.0, 0.0, 0.0, 0.0],
     [0.0, 1.0, 0.0, 0.0],
-    [0.0, 0.0, 1.0, 0.0],
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 0.0, -1.0, -0.206525],
     [0.0, 0.0, 0.0, 1.0]
   ]
 }
