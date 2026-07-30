@@ -258,40 +258,60 @@
       应该跟随夹爪运动到的世界位姿（即"运动学抓取"，非真实物理接触力/摩擦力
       约束，但对可视化演示已经足够直观）。
     -->
-    <body name="square_nut" pos="0.0 0.15 0.85" quat="0.7071 0.7071 0 0">
+    <body name="square_nut" pos="0.0 0.15 0.80" quat="1 0 0 0">
       <freejoint name="square_nut_freejoint"/>
       <geom name="nut_side_neg_x" pos="-0.03325 0 0" size="0.0105 0.04375 0.01" type="box"
-            material="bmetal" contype="0" conaffinity="0" group="2"/>
+            material="bmetal" contype="1" conaffinity="1" group="2"/>
       <geom name="nut_side_pos_y" pos="0.0 0.03325 0" size="0.03125 0.0105 0.01" type="box"
-            material="bmetal" contype="0" conaffinity="0" group="2"/>
+            material="bmetal" contype="1" conaffinity="1" group="2"/>
       <geom name="nut_side_neg_y" pos="0.0 -0.03325 0" size="0.03125 0.0105 0.01" type="box"
-            material="bmetal" contype="0" conaffinity="0" group="2"/>
+            material="bmetal" contype="1" conaffinity="1" group="2"/>
       <geom name="nut_side_pos_x" pos="0.03325 0 0" size="0.0105 0.04375 0.01" type="box"
-            material="bmetal" contype="0" conaffinity="0" group="2"/>
+            material="bmetal" contype="1" conaffinity="1" group="2"/>
       <geom name="nut_handle" pos="0.054 0 0" size="0.02525 0.015875 0.01" type="box"
-            material="bmetal" contype="0" conaffinity="0" group="2"/>
+            material="bmetal" contype="1" conaffinity="1" group="2"/>
       <site rgba="1 0 0 1" size="0.004" pos="0 0 0" name="nut_center_site"/>
       <site rgba="1 0 0 1" size="0.004" pos="0.054 0 0" name="nut_handle_site"/>
     </body>
 
     <!--
       方形螺母2（与螺母1 完全相同的几何体，仅 pos/quat 不同）：
-        pos="0.2 0.65 0.85"：沿世界 X 轴相对螺母1 平移 20 cm，避免重叠。
-        quat="0.61237 0.61237 -0.35355 0.35355"：在螺母1 的 90°（绕 X）
-          翻转基础上，额外绕螺母自身法线自转 60°，把手朝向与螺母1 不同。
+        pos="0.32 0.15 0.80"：沿世界 X 轴相对螺母1 平移 32 cm。
+        quat：仅绕世界 Z 轴自转 45°（与螺母1 一样平放在桌面上，见螺母1
+          处注释关于"平放"的说明），把手朝向与螺母1 不同。
+
+      【关于 3 个螺母彼此间距的重要说明——务必 ≥ 约 0.3 m】：
+        FoundationPose 的 register()（用于 estimate_all() 首帧初始化）在
+        每一个候选姿态附近会按 mesh 直径（本场景螺母网格对角线尺寸约
+        0.13~0.15 m）乘以一个裁剪比例（crop_ratio，源码
+        foundationpose/learning/training/predict_pose_refine.py 中
+        make_crop_data_batch()/compute_crop_window_tf_batch()）在整张画面上
+        截取一个局部窗口，再在这个窗口内做渲染比对打分。如果两个螺母之间的
+        实际距离小于这个裁剪窗口的半宽（此前 square_nut 在 x=0、round_nut 在
+        x=-0.15，仅相距 0.15 m，小于窗口半宽），裁剪窗口就会把"邻居"螺母也
+        包含进来；由于三个螺母外形相近（尤其两个方形螺母网格完全相同），
+        评分网络可能会把窗口里视觉上更醒目的"邻居"当成更优的匹配，导致这次
+        estimate_all() 算出的位姿其实是邻居螺母的位置，而不是自己的位置——
+        这正是之前"square_nut_2/round_nut 位姿估计结果明显不对（3D 框和坐标
+        轴出现在错误位置）"的根本原因（已通过对比 MuJoCo 仿真真值位姿与
+        FoundationPose 实际输出验证：错误输出的平移分量与"最近邻螺母"的
+        真实位置高度吻合）。因此这里把 square_nut_2/round_nut 都从螺母1 的
+        ±0.15~0.2 m 拉开到 ±0.32 m（螺母两两间距均 ≥ 0.32 m），确保任何一个
+        螺母的裁剪估计窗口都不会覆盖到另一个螺母，从根本上消除这种"估计到
+        邻居身上"的串扰。
     -->
-    <body name="square_nut_2" pos="0.2 0.15 0.85" quat="0.61237 0.61237 -0.35355 0.35355">
+    <body name="square_nut_2" pos="0.32 0.15 0.80" quat="0.9238795 0 0 0.3826834">
       <freejoint name="square_nut_2_freejoint"/>
       <geom name="nut2_side_neg_x" pos="-0.03325 0 0" size="0.0105 0.04375 0.01" type="box"
-            material="bmetal" contype="0" conaffinity="0" group="2"/>
+            material="bmetal" contype="1" conaffinity="1" group="2"/>
       <geom name="nut2_side_pos_y" pos="0.0 0.03325 0" size="0.03125 0.0105 0.01" type="box"
-            material="bmetal" contype="0" conaffinity="0" group="2"/>
+            material="bmetal" contype="1" conaffinity="1" group="2"/>
       <geom name="nut2_side_neg_y" pos="0.0 -0.03325 0" size="0.03125 0.0105 0.01" type="box"
-            material="bmetal" contype="0" conaffinity="0" group="2"/>
+            material="bmetal" contype="1" conaffinity="1" group="2"/>
       <geom name="nut2_side_pos_x" pos="0.03325 0 0" size="0.0105 0.04375 0.01" type="box"
-            material="bmetal" contype="0" conaffinity="0" group="2"/>
+            material="bmetal" contype="1" conaffinity="1" group="2"/>
       <geom name="nut2_handle" pos="0.054 0 0" size="0.02525 0.015875 0.01" type="box"
-            material="bmetal" contype="0" conaffinity="0" group="2"/>
+            material="bmetal" contype="1" conaffinity="1" group="2"/>
       <site rgba="1 0 0 1" size="0.004" pos="0 0 0" name="nut2_center_site"/>
       <site rgba="1 0 0 1" size="0.004" pos="0.054 0 0" name="nut2_handle_site"/>
     </body>
@@ -302,33 +322,31 @@
       长方体拼出八边形近似圆形，另加 1 个把手长方体，与
       06_convert_nut_mesh_for_foundationpose.py --xml round-nut.xml 转换出的
       nut_mesh/round_nut_textured_simple.obj 局部坐标系严格对齐）：
-        pos="-0.25 0.65 0.85"：沿世界 X 轴平移到 square_nut 的另一侧，
-          与 square_nut（world x ∈ [-0.044, 0.079]）、square_nut_2
-          （world x ∈ [0.140, 0.260]）均不重叠。
-        quat="0.35355 0.35355 -0.61237 0.61237"：与 square_nut 一样先绕
-          X 轴 +90° 使正面朝向相机，再额外绕自身法线自转 120°，把手朝向
-          与另外两个方形螺母均不同。
+        pos="-0.32 0.15 0.80"：沿世界 X 轴平移到 square_nut 的另一侧（与
+          square_nut_2 一样间距 0.32 m，理由见 square_nut_2 处关于
+          FoundationPose 裁剪窗口串扰问题的详细说明）。
+        quat：仅绕世界 Z 轴自转 90°，与另外两个方形螺母一样平放在桌面上。
     -->
-    <body name="round_nut" pos="-0.25 0.15 0.85" quat="0.35355 0.35355 -0.61237 0.61237">
+    <body name="round_nut" pos="-0.32 0.15 0.80" quat="0.7071068 0 0 0.7071068">
       <freejoint name="round_nut_freejoint"/>
       <geom name="round_nut_cross_neg_x" pos="-0.04245 0 0" size="0.01125 0.0225 0.01" type="box"
-            material="smetal_plain" contype="0" conaffinity="0" group="2"/>
+            material="smetal_plain" contype="1" conaffinity="1" group="2"/>
       <geom name="round_nut_cross_pos_x" pos="0.04245 0 0" size="0.01125 0.0225 0.01" type="box"
-            material="smetal_plain" contype="0" conaffinity="0" group="2"/>
+            material="smetal_plain" contype="1" conaffinity="1" group="2"/>
       <geom name="round_nut_cross_neg_y" pos="0 -0.04245 0" size="0.0225 0.01125 0.01" type="box"
-            material="smetal_plain" contype="0" conaffinity="0" group="2"/>
+            material="smetal_plain" contype="1" conaffinity="1" group="2"/>
       <geom name="round_nut_cross_pos_y" pos="0 0.04245 0" size="0.0225 0.01125 0.01" type="box"
-            material="smetal_plain" contype="0" conaffinity="0" group="2"/>
+            material="smetal_plain" contype="1" conaffinity="1" group="2"/>
       <geom name="round_nut_diag_neg_neg" pos="-0.03 -0.03 0" size="0.01125 0.0225 0.01"
-            axisangle="0 0 1 0.785398" type="box" material="smetal_plain" contype="0" conaffinity="0" group="2"/>
+            axisangle="0 0 1 0.785398" type="box" material="smetal_plain" contype="1" conaffinity="1" group="2"/>
       <geom name="round_nut_diag_pos_pos" pos="0.03 0.03 0" size="0.01125 0.0225 0.01"
-            axisangle="0 0 1 0.785398" type="box" material="smetal_plain" contype="0" conaffinity="0" group="2"/>
+            axisangle="0 0 1 0.785398" type="box" material="smetal_plain" contype="1" conaffinity="1" group="2"/>
       <geom name="round_nut_diag_pos_neg" pos="0.03 -0.03 0" size="0.0225 0.01125 0.01"
-            axisangle="0 0 1 0.785398" type="box" material="smetal_plain" contype="0" conaffinity="0" group="2"/>
+            axisangle="0 0 1 0.785398" type="box" material="smetal_plain" contype="1" conaffinity="1" group="2"/>
       <geom name="round_nut_diag_neg_pos" pos="-0.03 0.03 0" size="0.0225 0.01125 0.01"
-            axisangle="0 0 1 0.785398" type="box" material="smetal_plain" contype="0" conaffinity="0" group="2"/>
+            axisangle="0 0 1 0.785398" type="box" material="smetal_plain" contype="1" conaffinity="1" group="2"/>
       <geom name="round_nut_handle" pos="0.06 0 0" size="0.02525 0.015875 0.01" type="box"
-            material="smetal_plain" contype="0" conaffinity="0" group="2"/>
+            material="smetal_plain" contype="1" conaffinity="1" group="2"/>
       <site rgba="1 0 0 1" size="0.004" pos="0 0 0" name="round_nut_center_site"/>
       <site rgba="1 0 0 1" size="0.004" pos="0.06 0 0" name="round_nut_handle_site"/>
     </body>
@@ -338,16 +356,52 @@
         09_pick_and_place_nuts_mujoco.py 中把 3 个螺母分别从 y≈0.15 的初始位置
         抓取后放置到 y≈-0.05 的目标区（x 坐标与各自初始位置保持一致），
         这里用 3 个半透明彩色圆片在台面上标出对应目标落点，方便在 MuJoCo
-        可视化窗口中直观确认放置是否到位。
+        可视化窗口中直观确认放置是否到位。z=0.781 紧贴台面（台面上表面
+        z=0.78），与台面几乎重合、留 1mm 防止 z-fighting 闪烁。
     -->
-    <body name="place_marker_square_nut" pos="0.0 -0.05 0.841">
+    <body name="place_marker_square_nut" pos="0.0 -0.05 0.781">
       <geom type="cylinder" size="0.035 0.001" rgba="0.9 0.2 0.2 0.5" contype="0" conaffinity="0" group="2"/>
     </body>
-    <body name="place_marker_square_nut_2" pos="0.2 -0.05 0.841">
+    <body name="place_marker_square_nut_2" pos="0.32 -0.05 0.781">
       <geom type="cylinder" size="0.035 0.001" rgba="0.2 0.6 0.9 0.5" contype="0" conaffinity="0" group="2"/>
     </body>
-    <body name="place_marker_round_nut" pos="-0.25 -0.05 0.841">
+    <body name="place_marker_round_nut" pos="-0.32 -0.05 0.781">
       <geom type="cylinder" size="0.035 0.001" rgba="0.2 0.9 0.3 0.5" contype="0" conaffinity="0" group="2"/>
+    </body>
+
+    <!--
+      头顶 D435i 摄像头（固定安装于桌子正上方，独立于机械臂，不随机械臂运动）：
+        用于 09_pick_and_place_nuts_mujoco.py 对桌面上 3 个螺母做 6D 位姿估计
+        （不再使用机械臂手腕上的相机——机械臂运动过程中手腕相机视角会剧烈
+        变化甚至转到背对桌面，不适合做"边看边估计"的连续多目标跟踪；固定
+        俯视相机全程视野稳定，可同时看到 3 个螺母的初始区和放置目标区）。
+        安装于 pos=(0, 0.05, 1.55)：世界 X=0（桌子中心）、Y=0.05（螺母初始区
+        y=0.15 与放置目标区 y=-0.05 的中点）、Z=1.55（距台面 z=0.78 约 0.77m）。
+        quat 留空（默认单位阵）：MuJoCo 相机默认沿父 body 局部 -Z 轴看、局部
+        +Y 轴朝上；父 body 本身相对世界无旋转，因此相机默认朝向正好是"世界
+        -Z"，即笔直向下俯视桌面，天然覆盖桌面矩形区域，无需额外旋转。
+        fovy=60°（垂直视场角），640x480 分辨率，在 0.77m 高度下水平半视场约
+        覆盖 ±0.45m（对角线上边缘），足以同时看到 x∈[-0.25,0.2]、
+        y∈[-0.05,0.15] 范围内的全部 3 个螺母与放置标记，留有余量。
+        沿用与机械臂腕部相同的 D435i 网格资源（asset 中已声明的 d435i_0~8），
+        只是把它安装在一个固定的支架 body 上而不是机械臂末端。
+    -->
+    <body name="top_d435i_mount" pos="0 0.05 1.6" childclass="d435i">
+      <!-- 注：此前这里有一根从相机一直连到桌面的长圆柱"支架"（纯装饰），
+           视觉上非常突兀（像一根穿过桌面的柱子），因此已移除；相机 body
+           直接"悬浮"在桌子上方即可，不影响碰撞/渲染/位姿估计任何功能。 -->
+      <geom mesh="d435i_0" material="IR_Lens" class="d435i_visual"/>
+      <geom mesh="d435i_1" material="IR_Emitter_Lens" class="d435i_visual"/>
+      <geom mesh="d435i_2" material="IR_Rim" class="d435i_visual"/>
+      <geom mesh="d435i_3" material="IR_Lens" class="d435i_visual"/>
+      <geom mesh="d435i_4" material="Cameras_Gray" class="d435i_visual"/>
+      <geom mesh="d435i_5" material="Black_Acrylic" class="d435i_visual"/>
+      <geom mesh="d435i_6" material="Black_Acrylic" class="d435i_visual"/>
+      <geom mesh="d435i_7" material="RGB_Pupil" class="d435i_visual"/>
+      <geom mesh="d435i_8" mass="0.072" material="Metal_Casing" class="d435i_visual"/>
+      <geom class="d435i_collision" type="capsule" mesh="d435i_8"/>
+      <site name="top_d435i_rgb_optical_frame" pos="0.0325 0 -0.0036"/>
+      <camera name="d435i_top_rgb_camera" pos="0.0325 0 -0.0036" fovy="70" resolution="640 480"/>
     </body>
 
     <!--
