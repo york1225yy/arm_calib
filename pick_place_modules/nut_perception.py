@@ -152,6 +152,10 @@ class NutPerceptionModule:
 
         self.estimator = None  # 首次异步估计时才加载权重（懒加载）
         self.latest_poses = {}  # name -> T_nut_cam (4x4)，最近一次估计/跟踪结果
+        # pose_source：name -> "est"（FoundationPose 算法估计）或 "gt"
+        # （直接读取 MuJoCo 仿真真值），用于 UI 区分显示来源、供抓取规划
+        # 控制的同事对比"用算法估计 vs 用真值"两种情况下的抓取效果差异。
+        self.pose_source = {}
 
         # ── 异步推理相关状态（解决"按 E 之后窗口卡死/系统提示无响应"问题）──
         # 首次加载 FoundationPose 权重 + 首帧 estimate_all() register 通常需要
@@ -172,11 +176,13 @@ class NutPerceptionModule:
 
     def reset(self, name):
         self.latest_poses.pop(name, None)
+        self.pose_source.pop(name, None)
         if self.estimator is not None:
             self.estimator.reset(name)
 
     def clear(self):
         self.latest_poses.clear()
+        self.pose_source.clear()
         self._infer_thread = None
 
     # ── 首帧异步初始化（estimate_all，需要掩码）───────────────────────────
@@ -230,11 +236,13 @@ class NutPerceptionModule:
     # ── 连续帧增量跟踪（track_all，不需要掩码）────────────────────────────
     def track(self, rgb, depth_m):
         poses = self.estimator.track_all(rgb, depth=depth_m)
-        self.apply_poses(poses)
+        self.apply_poses(poses, source="est")
         return poses
 
-    def apply_poses(self, poses):
-        """对一批新估计/跟踪出的位姿做合理性过滤后合并进 self.latest_poses。"""
+    def apply_poses(self, poses, source="est"):
+        """对一批新估计/跟踪出的位姿做合理性过滤后合并进 self.latest_poses，
+        并记录每个目标本次位姿的来源（"est"=算法估计，"gt"=仿真真值），
+        供 UI 层区分显示/对比抓取效果使用。"""
         for name, T_nut_cam in list(poses.items()):
             if not pose_is_plausible(T_nut_cam):
                 print(f"  [异常位姿丢弃] '{name}' 深度={T_nut_cam[2, 3]:.3f}m 超出合理范围 "
@@ -242,6 +250,32 @@ class NutPerceptionModule:
                 del poses[name]
                 self.reset(name)
         self.latest_poses.update(poses)
+        for name in poses:
+            self.pose_source[name] = source
+
+    # ── 直接读取仿真真值（不经过任何位姿估计算法）────────────────────────
+    def get_ground_truth_T_nut_cam(self, model, data, name):
+        """直接从 MuJoCo 仿真中读取螺母 body 的真实位姿，换算到俯视相机
+        坐标系下，作为"完美感知"的位姿真值。仅在仿真环境下有意义（真实
+        机器人上没有 ground truth），用于抓取规划控制的同事快速对比
+        "使用算法估计位姿" vs "直接使用真值位姿"两种情况下的抓取效果
+        差异，从而排查抓取失败究竟是感知误差导致还是抓取规划/控制本身
+        的问题。"""
+        T_nut_world_gt = get_body_T_world(model, data, name)
+        # T_cam_base = inv(T_base_world) @ T_cam_world_cv
+        #   => T_cam_world_cv = T_base_world @ T_cam_base
+        #   => inv(T_cam_world_cv) = inv(T_cam_base) @ inv(T_base_world)
+        T_nut_cam_gt = np.linalg.inv(self.T_cam_base) @ np.linalg.inv(self.T_base_world) @ T_nut_world_gt
+        return T_nut_cam_gt
+
+    def use_ground_truth(self, model, data, names):
+        """对 names 中的每个螺母，跳过 FoundationPose 估计/跟踪，直接用
+        仿真真值位姿"冒充"感知结果写入 latest_poses。下游的
+        compute_T_grasp_base()/compute_T_flange_base()/可视化等逻辑无需
+        任何改动即可直接复用（它们只依赖 latest_poses 里的 T_nut_cam，
+        并不关心该位姿是估计出来的还是真值）。"""
+        poses = {name: self.get_ground_truth_T_nut_cam(model, data, name) for name in names}
+        self.apply_poses(poses, source="gt")
 
     def visualize_all(self, rgb, colors=None):
         if self.estimator is not None and self.latest_poses:

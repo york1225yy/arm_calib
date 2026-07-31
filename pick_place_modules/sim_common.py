@@ -302,3 +302,11 @@ def draw_xyz_axis_simple(color_bgr, ob_in_cam, K, scale=0.06, thickness=2):
 FLANGE_TARGET_BOX_HALF_SIZE_M = 0.03
 FLANGE_TARGET_BBOX = np.array([[-FLANGE_TARGET_BOX_HALF_SIZE_M] * 3,
                                 [FLANGE_TARGET_BOX_HALF_SIZE_M] * 3])
+
+# 螺母 6D 位姿可视化框的半边长（米）：用于在画面上画出螺母位姿（不论该
+# 位姿来自 FoundationPose 估计还是仿真真值）对应的简易 3D 框，同样只是个
+# 便于观察的固定尺寸标记，与螺母的真实网格尺寸无关。
+NUT_POSE_BOX_HALF_SIZE_M = 0.025
+NUT_POSE_BBOX = np.array([[-NUT_POSE_BOX_HALF_SIZE_M] * 3,
+                           [NUT_POSE_BOX_HALF_SIZE_M] * 3])
+

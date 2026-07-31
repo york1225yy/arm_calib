@@ -24,7 +24,9 @@ Kinova Gen3 + 桌面固定俯视 D435i 相机 demo：感知（FoundationPose 位
 IK/运动规划算法的具体实现。
 
 按键说明：
-  'e' 开始位姿估计+跟踪   'r' 重新初始化   'p' 打印6D目标位姿
+  'e' 开始位姿估计+跟踪（使用 FoundationPose 算法）
+  't' 直接使用仿真真值位姿（跳过算法，用于快速对比抓取效果）
+  'r' 重新初始化   'p' 打印6D目标位姿
   'g' 依次运动到每个螺母的法兰目标位置再返回   'q' 退出
   '1'-'7' 选中关节   '['/']' 关节角减/增   'c'/'o' 夹爪闭合/张开
 
@@ -49,7 +51,7 @@ from scipy.spatial.transform import Rotation
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "pick_place_modules"))
 from sim_common import (
-    ARM_JOINT_NAMES, BASE_BODY_NAME, FLANGE_TARGET_BBOX,
+    ARM_JOINT_NAMES, BASE_BODY_NAME, FLANGE_TARGET_BBOX, NUT_POSE_BBOX,
     NUT_BODY_NAMES, TOP_CAMERA_NAME, draw_posed_3d_box_simple, draw_xyz_axis_simple,
     get_all_nut_geom_ids, get_camera_intrinsics, load_start_qpos, load_tcp_flange,
     project_3d_to_2d, render_rgb_depth_masks, set_arm_ctrl, set_arm_qpos,
@@ -166,11 +168,21 @@ class Demo:
 
             vis_bgr = self.perception.visualize_all(rgb)
             vis_bgr = self._draw_flange_targets(vis_bgr)
+            vis_bgr = self._draw_nut_pose_boxes(vis_bgr)
             if waiting_text:
                 cv2.putText(vis_bgr, waiting_text, (8, 460), cv2.FONT_HERSHEY_SIMPLEX,
                             0.5, (0, 0, 0), 3, cv2.LINE_AA)
                 cv2.putText(vis_bgr, waiting_text, (8, 460), cv2.FONT_HERSHEY_SIMPLEX,
                             0.5, (0, 255, 255), 1, cv2.LINE_AA)
+        elif self.state == "ground_truth":
+            # 直接从仿真真值读取每个螺母的位姿（无需任何位姿估计算法，
+            # 每帧读取成本极低，无需异步/等待），"冒充"感知结果写入
+            # perception.latest_poses，供下游坐标变换/可视化/抓取规划
+            # 复用，用于跟 'e' 算法估计模式快速对比抓取效果。
+            self.perception.use_ground_truth(self.model, self.data, self.nut_order)
+            vis_bgr = self.perception.visualize_all(rgb)
+            vis_bgr = self._draw_flange_targets(vis_bgr)
+            vis_bgr = self._draw_nut_pose_boxes(vis_bgr)
         else:
             vis_bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
 
@@ -182,9 +194,11 @@ class Demo:
                      f"gripper={self.gripper_ratio:.2f}")
         lines.append("[1-7] select joint  [ [/] ] +-joint  [c] close gripper  [o] open gripper")
         if self.state == "idle":
-            lines.append("[e] start pose estimation   [q] quit")
-        elif self.state == "tracking":
+            lines.append("[e] start pose estimation (algorithm)   [t] use ground-truth pose (no algorithm)   [q] quit")
+        elif self.state in ("tracking", "ground_truth"):
+            source_label = "algorithm estimation" if self.state == "tracking" else "simulation ground truth"
             ready = all(n in self.perception.latest_poses for n in self.nut_order)
+            lines.append(f"pose source: {source_label}")
             lines.append(f"[p] {'print 6D grasp pose (ready)' if ready else 'print 6D grasp pose (waiting for all nuts)'}   [r] reinit   [q] quit")
             if not self.planner.is_idle:
                 lines.append(f"[G] running (queue remaining={self.planner.queue_remaining})")
@@ -210,6 +224,22 @@ class Demo:
             return -1
         k = cv2.waitKey(1) & 0xFF
         return k if k != 255 else -1
+
+    def _draw_nut_pose_boxes(self, vis_bgr):
+        # 给每个已知位姿的螺母画一个简易 3D 框+坐标轴，颜色区分位姿来源：
+        # 黄色=FoundationPose 算法估计，青色=直接读取仿真真值。这样即使
+        # 'ground_truth' 状态下 self.perception.estimator 尚未加载（无法
+        # 使用其自带的网格叠加可视化），也总能看到位姿对应的框，便于
+        # 直观对比两种模式下的目标位置差异。
+        for name, T_nut_cam in self.perception.latest_poses.items():
+            source = self.perception.pose_source.get(name, "est")
+            color = (0, 255, 255) if source == "est" else (255, 255, 0)  # BGR：黄色/青色
+            vis_bgr = draw_posed_3d_box_simple(self.K, vis_bgr, T_nut_cam, NUT_POSE_BBOX, line_color=color)
+            vis_bgr = draw_xyz_axis_simple(vis_bgr, T_nut_cam, self.K, scale=0.04)
+            u, v = project_3d_to_2d(np.array([0., 0., 0., 1.]), self.K, T_nut_cam)
+            cv2.putText(vis_bgr, f"{name}[{source}]", (int(u) + 6, int(v) - 8),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 2, cv2.LINE_AA)
+        return vis_bgr
 
     def _draw_flange_targets(self, vis_bgr):
         # 把每个已估计出位姿的螺母对应的法兰目标位置画成绿色 3D 框+坐标轴，
@@ -246,9 +276,12 @@ class Demo:
         if key in (ord('q'), ord('Q')):
             self._quit = True
         elif key in (ord('e'), ord('E')) and self.state == "idle":
-            print("[state] idle -> tracking (start pose estimation + tracking)")
+            print("[state] idle -> tracking (start pose estimation + tracking, using FoundationPose algorithm)")
             self.state = "tracking"
             self._just_entered_tracking = True
+        elif key in (ord('t'), ord('T')) and self.state == "idle":
+            print("[state] idle -> ground_truth (use simulation ground-truth pose directly, no algorithm)")
+            self.state = "ground_truth"
         elif key in (ord('r'), ord('R')) and self.state == "tracking":
             if self.perception.is_busy:
                 print("[info] pose estimation still running in background, wait before reinit.")
@@ -256,14 +289,17 @@ class Demo:
                 print("[state] reinit pose estimation")
                 self.perception.clear()
                 self._just_entered_tracking = True
-        elif key in (ord('p'), ord('P')) and self.state == "tracking":
+        elif key in (ord('r'), ord('R')) and self.state == "ground_truth":
+            print("[state] reinit ground-truth pose")
+            self.perception.clear()
+        elif key in (ord('p'), ord('P')) and self.state in ("tracking", "ground_truth"):
             if self.perception.is_busy:
                 print("[info] pose estimation still running, wait before printing 6D pose.")
             elif all(n in self.perception.latest_poses for n in self.nut_order):
                 self.compute_and_print_final_poses()
             else:
-                print("[info] not all nuts have an estimated pose yet.")
-        elif key in (ord('g'), ord('G')) and self.state == "tracking":
+                print("[info] not all nuts have a pose yet.")
+        elif key in (ord('g'), ord('G')) and self.state in ("tracking", "ground_truth"):
             if self.perception.is_busy:
                 print("[info] pose estimation still running, wait before pressing 'G'.")
             else:
@@ -310,7 +346,7 @@ class Demo:
             flange_xyz = T_flange_base_est[:3, 3]
             flange_rpy_deg = Rotation.from_matrix(T_flange_base_est[:3, :3]).as_euler("xyz", degrees=True)
 
-            print(f"\n[{name}]")
+            print(f"\n[{name}]  pose_source={self.perception.pose_source.get(name, '?')}")
             print(f"  [check] pos_err={pos_err * 1000:.1f}mm  rot_err={rot_err_deg:.1f}deg (vs sim ground truth)")
             print(f"  grasp TCP 6D pose (base frame): xyz(m)={grasp_xyz}  rpy(deg)={grasp_rpy_deg}  "
                   f"quat(xyzw)={grasp_quat_xyzw}")
@@ -326,7 +362,7 @@ class Demo:
             print("[info] previous 'G' motion still running, wait until it finishes.")
             return
         if not all(n in self.perception.latest_poses for n in self.nut_order):
-            print("[info] not all nuts have an estimated pose yet.")
+            print("[info] not all nuts have a pose yet.")
             return
 
         print(f"\n{'=' * 60}\n[G] solving position IK and building motion queue: {self.nut_order}\n{'=' * 60}")
