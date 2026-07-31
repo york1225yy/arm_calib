@@ -50,6 +50,18 @@ Kinova Gen3 + Robotiq 2F-85 + 桌面固定俯视 D435i 相机的"感知(Foundati
      'r' ：重新初始化位姿估计（跟踪丢失时使用）
      'p' ：（需已按过 'e' 且 3 个螺母都已估计出位姿）通过坐标变换计算并
            打印每个螺母对应的最终机械臂 6D 抓取目标位姿（不驱动机械臂）
+     'g' ：（需已按过 'e' 且 3 个螺母都已估计出位姿）对 nut_order 中每个
+           螺母依次求解【只约束 xyz 位置、不约束姿态】的 IK（阻尼最小
+           二乘雅可比逆运动学，见 solve_ik_position()），驱动机械臂
+           （只控制 7 个关节，夹爪已注释不存在）平滑运动到该螺母对应的
+           T_flange_base_est 的位置（末端法兰 xyz 坐标），停留片刻后再
+           运动回初始姿态（q_start），然后再对下一个螺母执行同样的
+           "去-回"，全部按 nut_order 顺序依次执行（真实物理仿真持续运行，
+           运动轨迹为关节空间线性插值，不会瞬间跳变）。之所以只约束位置
+           不约束姿态：T_flange_base_est 的旋转部分由抓取偏移直接复合而
+           来，不保证一定在机械臂可达姿态范围内，容易导致 6 维 IK 无解；
+           只求 3 维位置解更容易稳定收敛，足以验证"坐标变换算出的法兰
+           目标位置是否正确"。
      'q' ：退出程序
 
 8) 【新增：键盘手动控制机械臂 + 夹爪】不再有任何自动抓取逻辑，取而代之
@@ -62,6 +74,11 @@ Kinova Gen3 + Robotiq 2F-85 + 桌面固定俯视 D435i 相机的"感知(Foundati
    每次按键会直接把对应关节/夹爪执行器的目标 ctrl 值增/减一个固定步长，
    真实物理仿真持续运行（mj_step 每帧都会调用），因此手动调整的关节会
    平滑地运动到新的目标角度，而不是瞬间跳变。
+   注：gen3_with_gripper_and_nuts.xml 中夹爪整体当前已被注释（未删除，
+   见该文件 "robotiq_85_adapter_link" 处说明），便于 'g' 键运动只控制
+   机械臂 7 个关节、不受夹爪几何/碰撞干扰；因此当前 'c'/'o' 键对应的
+   夹爪执行器不存在，按下无实际效果（set_gripper_ctrl_ratio 会自动
+   跳过缺失的执行器）。如需恢复夹爪，取消该 xml 中的相关注释即可。
 
 ── 抓取偏移 / TCP-法兰标定 ─────────────────────────────────────────────
 T_grasp_nut（夹爪 TCP 相对螺母局部坐标系的抓取偏移）与 T_tcp_flange（TCP
@@ -106,6 +123,7 @@ GRIPPER_ACTUATOR_NAMES = ["finger_1", "finger_2"]
 GRIPPER_ACTUATOR_MAX = 0.8  # 对应 xml 中 finger_1/finger_2 的 ctrlrange 上限
 
 GRIP_SITE = "grip_site"
+FLANGE_BODY_NAME = "bracelet_link"  # 末端法兰 body（夹爪已注释后，运动目标改为此 body 的位置）
 BASE_BODY_NAME = "base_link"
 TOP_CAMERA_NAME = "d435i_top_rgb_camera"
 
@@ -261,14 +279,71 @@ def set_arm_ctrl(model, data, q7):
 def set_gripper_ctrl_ratio(model, data, ratio):
     """ratio=0 -> 完全张开，ratio=1 -> 完全闭合（ctrl = ratio * 0.8）。
     真实物理仿真下只需驱动 finger_1/finger_2 两个执行器，其余 4 个从动
-    关节由 xml 中的 <tendon> 被动耦合传动，无需手动写 qpos。"""
+    关节由 xml 中的 <tendon> 被动耦合传动，无需手动写 qpos。
+
+    注：当前 gen3_with_gripper_and_nuts.xml 中夹爪整体已被注释掉（便于
+    10_pick_and_place_nuts_mujoco.py 中只控制机械臂 7 个关节运动到
+    T_flange_base_est 时不受夹爪干扰），因此 finger_1/finger_2 执行器可能
+    不存在（mj_name2id 返回 -1）。这里显式跳过缺失的执行器，避免用 -1
+    误写到 data.ctrl 数组最后一个元素。"""
     for name in GRIPPER_ACTUATOR_NAMES:
         aid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, name)
+        if aid == -1:
+            continue
         data.ctrl[aid] = ratio * GRIPPER_ACTUATOR_MAX
 
 
 def rotation_log(R):
     return Rotation.from_matrix(R).as_rotvec()
+
+
+def solve_ik_position(model, ik_data, target_pos, q0, body_name=FLANGE_BODY_NAME,
+                       max_iter=300, pos_tol=1e-3, damping=1e-3, step_clip=0.2):
+    """阻尼最小二乘（DLS）雅可比逆运动学，只约束位置（3维），不约束姿态。
+
+    求解 7 个关节角，使 body_name（默认末端法兰 "bracelet_link"）在世界/
+    机械臂坐标系下的位置逼近 target_pos。之所以只约束 xyz 位置、完全不管
+    姿态：法兰的目标姿态若同时与 T_flange_base_est 的旋转部分严格匹配，
+    在某些螺母朝向下可能无解或收敛困难（该姿态是由"抓取偏移 T_grasp_nut"
+    直接复合出来的，不保证一定在机械臂的可达姿态范围内）；而目前只是要
+    验证/演示"整条坐标变换链路算出的法兰目标位置是否正确"，因此放宽为
+    只求位置解，忽略姿态误差，求解更容易收敛、更稳定。
+
+    q0 为迭代初值（热启动）。ik_data 为独立于真实仿真 self.data 的
+    scratch MjData，反复调用 mj_forward/mj_jacBody 做正向运动学试算，
+    不会扰动真正在运行物理仿真的 self.data。
+    """
+    set_arm_qpos(model, ik_data, q0)
+    mujoco.mj_forward(model, ik_data)
+
+    body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, body_name)
+    if body_id == -1:
+        raise ValueError(f"找不到 body: {body_name}")
+    arm_jids = [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, n) for n in ARM_JOINT_NAMES]
+    dof_idx = [model.jnt_dofadr[j] for j in arm_jids]
+
+    jacp = np.zeros((3, model.nv))
+    jacr = np.zeros((3, model.nv))
+
+    for _ in range(max_iter):
+        pos = ik_data.xpos[body_id].copy()
+        pos_err = target_pos - pos
+
+        if np.linalg.norm(pos_err) < pos_tol:
+            break
+
+        mujoco.mj_jacBody(model, ik_data, jacp, jacr, body_id)
+        J = jacp[:, dof_idx]  # (3, 7)，只取平移部分的雅可比
+
+        JJt = J @ J.T + damping * np.eye(3)
+        dq = J.T @ np.linalg.solve(JJt, pos_err)
+        dq = np.clip(dq, -step_clip, step_clip)
+
+        q = get_arm_qpos(model, ik_data)
+        set_arm_qpos(model, ik_data, q + dq)
+        mujoco.mj_forward(model, ik_data)
+
+    return get_arm_qpos(model, ik_data)
 
 
 def load_start_qpos(start_pose_file):
@@ -350,6 +425,76 @@ def pose_is_plausible(T_nut_cam, depth_range_m=DEPTH_SANITY_RANGE_M):
         return False
     z_cam = float(T_nut_cam[2, 3])
     return depth_range_m[0] <= z_cam <= depth_range_m[1]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 轻量级 3D 框/坐标轴绘制（不依赖 foundationpose_api 内部的 torch/pytorch3d
+# 重型导入链——那些只有真正调用 FoundationPose 推理时才需要）。逻辑与
+# foundationpose/Utils.py 中的 draw_posed_3d_box()/draw_xyz_axis() 完全
+# 一致（只是去掉了对 estimater/Utils 模块的依赖），用于在相机画面上画出
+# "机械臂法兰最终目标位置" T_flange_base_est 对应的绿色 3D 框，
+# 与 FoundationPose 估计出的螺母 3D 框风格保持一致，便于对照查看。
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _project_3d_to_2d(pt_homo, K, ob_in_cam):
+    projected = K @ ((ob_in_cam @ pt_homo)[:3])
+    projected = projected / projected[2]
+    return projected[:2].round().astype(int)
+
+
+def draw_posed_3d_box_simple(K, img, ob_in_cam, bbox, line_color=(0, 255, 0), linewidth=2):
+    """@bbox: (2,3) min/max（局部坐标系下，与目标位姿 ob_in_cam 复合后再投影）。"""
+    min_xyz = bbox.min(axis=0)
+    xmin, ymin, zmin = min_xyz
+    max_xyz = bbox.max(axis=0)
+    xmax, ymax, zmax = max_xyz
+
+    def draw_line3d(start, end, img):
+        pts = np.stack((start, end), axis=0).reshape(-1, 3)
+        pts_homo = np.hstack([pts, np.ones((pts.shape[0], 1))])
+        pts_cam = (ob_in_cam @ pts_homo.T).T[:, :3]
+        projected = (K @ pts_cam.T).T
+        uv = np.round(projected[:, :2] / projected[:, 2].reshape(-1, 1)).astype(int)
+        img = cv2.line(img, uv[0].tolist(), uv[1].tolist(), color=line_color,
+                        thickness=linewidth, lineType=cv2.LINE_AA)
+        return img
+
+    for y in [ymin, ymax]:
+        for z in [zmin, zmax]:
+            start = np.array([xmin, y, z])
+            end = start + np.array([xmax - xmin, 0, 0])
+            img = draw_line3d(start, end, img)
+    for x in [xmin, xmax]:
+        for z in [zmin, zmax]:
+            start = np.array([x, ymin, z])
+            end = start + np.array([0, ymax - ymin, 0])
+            img = draw_line3d(start, end, img)
+    for x in [xmin, xmax]:
+        for y in [ymin, ymax]:
+            start = np.array([x, y, zmin])
+            end = start + np.array([0, 0, zmax - zmin])
+            img = draw_line3d(start, end, img)
+    return img
+
+
+def draw_xyz_axis_simple(color_bgr, ob_in_cam, K, scale=0.06, thickness=2):
+    """画三条从目标原点出发的坐标轴短线（BGR：X红/Y绿/Z蓝），风格与
+    FoundationPose 内部 draw_xyz_axis() 一致，但只处理 BGR 图像，逻辑更简单。"""
+    origin = tuple(_project_3d_to_2d(np.array([0., 0., 0., 1.]), K, ob_in_cam))
+    xx = tuple(_project_3d_to_2d(np.array([scale, 0., 0., 1.]), K, ob_in_cam))
+    yy = tuple(_project_3d_to_2d(np.array([0., scale, 0., 1.]), K, ob_in_cam))
+    zz = tuple(_project_3d_to_2d(np.array([0., 0., scale, 1.]), K, ob_in_cam))
+    cv2.arrowedLine(color_bgr, origin, xx, color=(0, 0, 255), thickness=thickness, line_type=cv2.LINE_AA)
+    cv2.arrowedLine(color_bgr, origin, yy, color=(0, 255, 0), thickness=thickness, line_type=cv2.LINE_AA)
+    cv2.arrowedLine(color_bgr, origin, zz, color=(255, 0, 0), thickness=thickness, line_type=cv2.LINE_AA)
+    return color_bgr
+
+
+# 法兰目标可视化框的半边长（米）：只是个便于观察的固定尺寸标记，与法兰的
+# 真实几何尺寸无关（法兰是机械结构，不像螺母有网格可供估计包围盒）。
+FLANGE_TARGET_BOX_HALF_SIZE_M = 0.03
+FLANGE_TARGET_BBOX = np.array([[-FLANGE_TARGET_BOX_HALF_SIZE_M] * 3,
+                                [FLANGE_TARGET_BOX_HALF_SIZE_M] * 3])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -474,6 +619,21 @@ class Demo:
         self.q_manual = self.q_start.copy()
         self.gripper_ratio = 0.0
 
+        # ── 'G' 键触发的"移动到各目标位姿后返回初始位姿"运动队列 ──────────
+        # ik_data：与真实仿真 self.data 完全独立的 scratch MjData，专门用于
+        # solve_ik() 内部反复 mj_forward 试算，不会扰动/篡改真实物理仿真
+        # 的当前状态（螺母/机械臂的真实 qpos、速度等）。
+        self.ik_data = mujoco.MjData(self.model)
+        # motion_queue：待执行的 (标签, 目标关节角 q7) 列表，先进先出。
+        self.motion_queue = []
+        self.motion_start_q = None   # 当前运动段的起始关节角
+        self.motion_target_q = None  # 当前运动段的目标关节角（None=空闲）
+        self.motion_step = 0
+        self.motion_total_steps = max(1, round(self.args.move_seconds * self.args.fps))
+        self.motion_hold_counter = 0
+        self.motion_hold_frames = max(0, round(self.args.hold_seconds * self.args.fps))
+        self.motion_label = None
+
     # ── 后台线程：加载权重（如需要）+ 执行一次 estimate_all() ──────────────
     def _start_estimate_async(self, rgb, masks, depth_m):
         self._infer_busy = True
@@ -551,6 +711,7 @@ class Demo:
                 vis_bgr = self.estimator.visualize_all(rgb, self.latest_poses)
             else:
                 vis_bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+            vis_bgr = self._draw_flange_targets(vis_bgr)
             if waiting_text:
                 cv2.putText(vis_bgr, waiting_text, (8, 460), cv2.FONT_HERSHEY_SIMPLEX,
                             0.5, (0, 0, 0), 3, cv2.LINE_AA)
@@ -571,6 +732,10 @@ class Demo:
         elif self.state == "tracking":
             ready = all(n in self.latest_poses for n in self.nut_order)
             lines.append(f"[p] {'print 6D grasp pose (ready)' if ready else 'print 6D grasp pose (waiting for all nuts)'}   [r] reinit   [q] quit")
+            if self.motion_target_q is not None or self.motion_queue:
+                lines.append(f"[G] running: {self.motion_label} (queue remaining={len(self.motion_queue)})")
+            else:
+                lines.append(f"[g] {'go to each target & back (ready)' if ready else 'go to each target & back (waiting for all nuts)'}")
         for i, line in enumerate(lines):
             cv2.putText(vis_bgr, line, (8, 20 + 18 * i), cv2.FONT_HERSHEY_SIMPLEX,
                         0.5, (0, 0, 0), 3, cv2.LINE_AA)
@@ -627,6 +792,11 @@ class Demo:
                 self.compute_and_print_final_poses()
             else:
                 print("[提示] 还有螺母未成功估计出位姿，暂不能计算最终 6D 位姿。")
+        elif key in (ord('g'), ord('G')) and self.state == "tracking":
+            if self._infer_busy:
+                print("[提示] 位姿估计仍在后台运行中，请稍候再按 'G'。")
+            else:
+                self.build_motion_queue()
         elif key in tuple(ord(str(d)) for d in range(1, 8)):
             self.active_joint_idx = int(chr(key)) - 1
             print(f"    [手动控制] 已选中关节 {ARM_JOINT_NAMES[self.active_joint_idx]}")
@@ -653,6 +823,44 @@ class Demo:
                 if self._quit:
                     return
 
+    # ── 根据当前 latest_poses，为单个螺母计算 T_grasp_base_est（夹爪 TCP
+    # 在机械臂基坐标系下的最终 6D 目标位姿）。抽出为独立方法，供打印
+    # (compute_and_print_final_poses) 与 'G' 键运动 (build_motion_queue)
+    # 共用，避免重复实现同一套坐标变换逻辑。──────────────────────────────
+    def _compute_T_grasp_base(self, name):
+        T_nut_cam = self.latest_poses[name]
+        T_nut_base_est = self.T_cam_base @ T_nut_cam
+        T_nut_base_est = fix_flat_object_updown_ambiguity(T_nut_base_est)
+
+        grasp_file = self.grasp_pose_files[name]
+        if not os.path.isabs(grasp_file):
+            grasp_file = os.path.join(self.here, grasp_file)
+        T_grasp_nut_candidates = load_grasp_pose(grasp_file)
+        T_grasp_nut = T_grasp_nut_candidates[0]
+        T_grasp_base_est = T_nut_base_est @ T_grasp_nut
+        return T_grasp_base_est, T_nut_base_est
+
+    # ── 在相机画面上把每个已估计出位姿的螺母对应的"机械臂法兰最终目标
+    # 位置" T_flange_base_est 画成绿色 3D 框 + 坐标轴（与 FoundationPose
+    # 估计出的螺母 3D 框风格一致），便于直观对照"螺母在哪/法兰要去哪"。──
+    def _draw_flange_targets(self, vis_bgr):
+        if not self.latest_poses:
+            return vis_bgr
+        T_base_cam = np.linalg.inv(self.T_cam_base)  # base 坐标系 -> 相机坐标系
+        for name in self.latest_poses:
+            T_grasp_base_est, _ = self._compute_T_grasp_base(name)
+            T_flange_base_est = T_grasp_base_est @ np.linalg.inv(self.T_tcp_flange)
+            T_flange_cam = T_base_cam @ T_flange_base_est
+            if T_flange_cam[2, 3] <= 1e-6:
+                continue  # 目标在相机背后/重合，跳过（避免除零/投影到画面外）
+            vis_bgr = draw_posed_3d_box_simple(self.K, vis_bgr, T_flange_cam,
+                                                FLANGE_TARGET_BBOX, line_color=(0, 255, 0))
+            vis_bgr = draw_xyz_axis_simple(vis_bgr, T_flange_cam, self.K, scale=0.06)
+            u, v = _project_3d_to_2d(np.array([0., 0., 0., 1.]), self.K, T_flange_cam)
+            cv2.putText(vis_bgr, f"flange<-{name}", (int(u) + 6, int(v) + 16),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 2, cv2.LINE_AA)
+        return vis_bgr
+
     # ── 根据当前 latest_poses，通过坐标变换计算并打印每个螺母对应的最终
     # 机械臂 6D 抓取目标位姿（不求解 IK、不驱动机械臂，只输出数值）───────
     def compute_and_print_final_poses(self):
@@ -670,16 +878,7 @@ class Demo:
         处理）。同时打印与仿真真值的 pos_err/rot_err 作为精度参考。"""
         print(f"\n{'=' * 60}\n[6D 位姿输出] 通过坐标变换计算最终机械臂抓取目标位姿: {self.nut_order}\n{'=' * 60}")
         for name in self.nut_order:
-            T_nut_cam = self.latest_poses[name]
-            T_nut_base_est = self.T_cam_base @ T_nut_cam
-            T_nut_base_est = fix_flat_object_updown_ambiguity(T_nut_base_est)
-
-            grasp_file = self.grasp_pose_files[name]
-            if not os.path.isabs(grasp_file):
-                grasp_file = os.path.join(self.here, grasp_file)
-            T_grasp_nut_candidates = load_grasp_pose(grasp_file)
-            T_grasp_nut = T_grasp_nut_candidates[0]
-            T_grasp_base_est = T_nut_base_est @ T_grasp_nut
+            T_grasp_base_est, T_nut_base_est = self._compute_T_grasp_base(name)
             T_flange_base_est = T_grasp_base_est @ np.linalg.inv(self.T_tcp_flange)
 
             T_nut_world_gt = get_body_T_world(self.model, self.data, name)
@@ -702,6 +901,63 @@ class Demo:
             print(f"  T_grasp_base=\n{T_grasp_base_est}")
             print(f"  T_flange_base=\n{T_flange_base_est}")
 
+    # ── 'G' 键：为每个已估计出位姿的螺母求解位置 IK（只约束末端法兰的 xyz
+    # 位置，不约束姿态，见 solve_ik_position() 说明），构建"移动到目标
+    # T_flange_base_est 位置 -> 返回初始位姿"的运动队列（依次对每个目标做
+    # 一次来回）。夹爪已注释、不存在，只驱动 7 个机械臂关节。──────────────
+    def build_motion_queue(self):
+        if self.motion_target_q is not None or self.motion_queue:
+            print("[提示] 上一轮 'G' 运动尚未执行完毕，请等待完成后再按 'G'。")
+            return
+        if not all(n in self.latest_poses for n in self.nut_order):
+            print("[提示] 还有螺母未成功估计出位姿，暂不能执行 'G' 运动。")
+            return
+
+        print(f"\n{'=' * 60}\n[G] 依次求解位置 IK（只约束末端法兰 xyz，不约束姿态）并规划运动: "
+              f"移动到每个目标 T_flange_base_est 的位置 -> 返回初始位姿，"
+              f"逐一对 {self.nut_order} 执行来回\n{'=' * 60}")
+        q_seed = self.q_manual.copy()
+        queue = []
+        for name in self.nut_order:
+            T_grasp_base_est, _ = self._compute_T_grasp_base(name)
+            T_flange_base_est = T_grasp_base_est @ np.linalg.inv(self.T_tcp_flange)
+            target_pos = T_flange_base_est[:3, 3]
+            q_ik = solve_ik_position(self.model, self.ik_data, target_pos, q_seed)
+            print(f"  [{name}] 法兰目标位置 xyz(m)={target_pos}  IK 解: {np.degrees(q_ik).round(1)} deg")
+            queue.append((f"go->{name}", q_ik))
+            queue.append((f"return<-{name}", self.q_start.copy()))
+            q_seed = self.q_start.copy()  # 每次都从初始姿态热启动下一次 IK，保证解的一致性
+
+        self.motion_queue = queue
+        self._advance_motion_queue()
+
+    def _advance_motion_queue(self):
+        if not self.motion_queue:
+            self.motion_target_q = None
+            self.motion_label = None
+            return
+        self.motion_label, self.motion_target_q = self.motion_queue.pop(0)
+        self.motion_start_q = self.q_manual.copy()
+        self.motion_step = 0
+        self.motion_hold_counter = 0
+        print(f"    [G运动] 开始执行: {self.motion_label}")
+
+    def update_motion(self):
+        """每个显示帧调用一次：若运动队列非空，则平滑插值推进
+        self.q_manual 朝当前目标关节角运动（真实物理仿真持续 mj_step，
+        因此手臂会平滑地运动过去，而不是瞬间跳变），到达后停留
+        motion_hold_frames 帧，再自动切换到队列中的下一个目标。"""
+        if self.motion_target_q is None:
+            return
+        t = min(1.0, (self.motion_step + 1) / self.motion_total_steps)
+        self.q_manual = self.motion_start_q + (self.motion_target_q - self.motion_start_q) * t
+        set_arm_ctrl(self.model, self.data, self.q_manual)
+        self.motion_step += 1
+        if t >= 1.0:
+            self.motion_hold_counter += 1
+            if self.motion_hold_counter >= self.motion_hold_frames:
+                self._advance_motion_queue()
+
     # ── 主循环：idle / tracking 状态下等待按键；手动控制随时生效 ──────────
     # 与此前"只在 settle()/抓取路点执行期间才 mj_step()"不同，删除自动抓取
     # 逻辑后，机械臂运动完全由手动按键触发，因此这里的主循环需要在每个
@@ -712,6 +968,7 @@ class Demo:
         display_every = max(1, round((1.0 / self.args.fps) / self.model.opt.timestep))
         auto_frame_counter = 0
         while not self._quit:
+            self.update_motion()
             for _ in range(display_every):
                 mujoco.mj_step(self.model, self.data)
                 if self.viewer is not None:
@@ -768,6 +1025,10 @@ def main():
                         help="程序启动后先运行多少个物理步让螺母落稳到桌面")
     parser.add_argument("--est_refine_iter", type=int, default=5)
     parser.add_argument("--track_refine_iter", type=int, default=2)
+    parser.add_argument("--move_seconds", type=float, default=2.5,
+                        help="'G' 键触发的运动中，每一段（去/回）插值运动所用的时长（秒）")
+    parser.add_argument("--hold_seconds", type=float, default=1.0,
+                        help="'G' 键触发的运动中，到达每个目标/初始位姿后停留多少秒再继续下一段")
 
     parser.add_argument("--fps", type=int, default=30, help="显示/录制视频的帧率")
     parser.add_argument("--save_video", default=None, help="保存俯视相机画面(含位姿可视化)mp4路径")

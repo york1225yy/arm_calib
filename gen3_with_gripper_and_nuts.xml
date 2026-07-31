@@ -153,6 +153,8 @@
 
     <!-- ── Robotiq 2F-85 夹爪网格（来自 robotiq_gripper_85.xml，见文件顶部
          关于缺失网格文件的说明；路径相对本 xml 文件所在目录）──────── -->
+    <!-- 【夹爪已临时注释，见文件顶部/夹爪 body 处说明，便于 10_pick_and_place_nuts_mujoco.py
+         中仅控制机械臂 7 个关节运动到 T_flange_base_est 时不受夹爪干扰】
     <mesh name="robotiq_arg2f_base_link" file="robotiq_85_gripper/robotiq_arg2f_base_link.stl"/>
     <mesh name="robotiq_arg2f_85_outer_knuckle" file="robotiq_85_gripper/robotiq_arg2f_85_outer_knuckle.stl" scale="0.001 0.001 0.001"/>
     <mesh name="robotiq_arg2f_85_outer_finger" file="robotiq_85_gripper/robotiq_arg2f_85_outer_finger.stl" scale="0.001 0.001 0.001"/>
@@ -163,6 +165,7 @@
     <mesh name="robotiq_arg2f_85_outer_finger_vis" file="robotiq_85_gripper/robotiq_arg2f_85_outer_finger_vis.stl" scale="0.001 0.001 0.001"/>
     <mesh name="robotiq_arg2f_85_inner_finger_vis" file="robotiq_85_gripper/robotiq_arg2f_85_inner_finger_vis.stl" scale="0.001 0.001 0.001"/>
     <mesh name="robotiq_arg2f_85_inner_knuckle_vis" file="robotiq_85_gripper/robotiq_arg2f_85_inner_knuckle_vis.stl" scale="0.001 0.001 0.001"/>
+    -->
   </asset>
 
   <!--
@@ -170,23 +173,27 @@
   【腱耦合传动（tendon）】—— 来自 robotiq_gripper_85.xml
   Robotiq 2F-85 是欠驱动平行夹爪，每根手指的外关节/内关节/内指节通过
   固定腱（fixed tendon）耦合，只需一个执行器即可驱动整根手指的抓握动作。
+  【夹爪已临时注释，详见下方 <worldbody> 中 "robotiq_85_adapter_link" 处说明】
   ──────────────────────────────────────────────────────────────────
   -->
+  <!--
   <tendon>
-    <!-- finger2（左指）耦合传动 -->
+    <!- - finger2（左指）耦合传动 - ->
     <fixed name="finger2_12_cpl" range="-1 1" stiffness="0.4" springlength="0.001" limited="true">
       <joint joint="finger_joint" coef="1"/>
       <joint joint="left_inner_finger_joint" coef="-3"/>
       <joint joint="left_inner_knuckle_joint" coef="1"/>
     </fixed>
 
-    <!-- finger1（右指）耦合传动 -->
+    <!- - finger1（右指）耦合传动 - ->
     <fixed name="finger1_12_cpl" range="-1 1" stiffness="0.4" springlength="0.001" limited="true">
       <joint joint="right_outer_knuckle_joint" coef="1"/>
       <joint joint="right_inner_finger_joint" coef="-3"/>
       <joint joint="right_inner_knuckle_joint" coef="1"/>
     </fixed>
   </tendon>
+  -->
+
 
   <worldbody>
     <!-- 全局光源：正上方主光 + 侧方补光，保证相机视角不黑屏 -->
@@ -582,11 +589,20 @@
                       的 TCP 标记重合，法兰局部 -Z 方向即为夹爪的接近方向。
                       如需与实际 CAD/标定结果对齐，调整此处 pos/quat 并
                       同步更新 tcp_flange.json 中的 T_tcp_flange。
+
+                      【夹爪已临时注释（未删除）】为了让 10_pick_and_place_
+                      nuts_mujoco.py 中"仅控制机械臂 7 个关节运动到
+                      T_flange_base_est"的运动不受夹爪几何/关节/tendon 的
+                      任何干扰（碰撞、额外自由度等），此处将整个夹爪子树、
+                      对应的 mesh 声明、tendon 耦合、finger_1/finger_2
+                      执行器、force/torque 传感器全部注释掉（保留原文本，
+                      如需恢复夹爪功能，直接取消这些注释即可）。
                     ════════════════════════════════════════════════════
                     -->
+                    <!--
                     <body name="robotiq_85_adapter_link" pos="0 0 -0.061525" quat="0 1 0 0">
                       <site name="ft_frame" pos="0 0 0" size="0.01 0.01 0.01" rgba="1 0 0 1" type="sphere" group="1"/>
-                      <!-- 夹爪 TCP（两指闭合中心近似位置），沿夹爪自身 Z 轴前伸 14.5 cm -->
+                      <!- - 夹爪 TCP（两指闭合中心近似位置），沿夹爪自身 Z 轴前伸 14.5 cm - ->
                       <body name="eef" pos="0 0 0.145" quat="0.707105 0 0 -0.707105">
                         <site name="grip_site" pos="0 0 0" size="0.01 0.01 0.01" rgba="1 0 0 0.5" type="sphere" group="1"/>
                         <site name="ee_x" pos="0.1 0 0" size="0.005 .1" quat="0.707105 0 0.707108 0" rgba="1 0 0 0" type="cylinder" group="1"/>
@@ -644,7 +660,8 @@
                         <geom type="mesh" group="0" rgba="0.1 0.1 0.1 1" mesh="robotiq_arg2f_85_inner_knuckle" name="right_inner_knuckle_collision"/>
                       </body>
                     </body>
-                    <!-- Robotiq 2F-85 夹爪子树结束 -->
+                    -->
+                    <!-- Robotiq 2F-85 夹爪子树结束（已注释） -->
                   </body>
                 </body>
               </body>
@@ -672,9 +689,12 @@
     <position class="small_actuator" name="joint_5" joint="joint_5"/><!-- 腕偏摆，无限位 -->
     <position class="small_actuator" name="joint_6" joint="joint_6" ctrlrange="-2.0996310901491784 2.0996310901491784"/><!-- 腕俯仰，约±120.3° -->
     <position class="small_actuator" name="joint_7" joint="joint_7"/><!-- 腕旋转，无限位 -->
-    <!-- Robotiq 2F-85 夹爪：两个手指各一个位置执行器，ctrlrange 对应张开(0)~闭合(0.8) -->
+    <!-- Robotiq 2F-85 夹爪：两个手指各一个位置执行器，ctrlrange 对应张开(0)~闭合(0.8)
+         【夹爪已临时注释，见 <worldbody> 中 "robotiq_85_adapter_link" 处说明】 -->
+    <!--
     <position name="finger_1" ctrllimited="true" kp="20" joint="finger_joint" ctrlrange="0 0.8"/>
     <position name="finger_2" ctrllimited="true" kp="20" joint="right_outer_knuckle_joint" ctrlrange="0 0.8"/>
+    -->
   </actuator>
 
   <!--
@@ -682,12 +702,15 @@
   【传感器（sensor）】—— 来自 robotiq_gripper_85.xml
   力/力矩传感器，安装于夹爪基座的 "ft_frame" site 处，用于读取
   夹爪-末端法兰之间受到的接触力/力矩（如需在仿真中做力控/接触检测）。
+  【夹爪已临时注释，"ft_frame" site 当前不存在，故此传感器区块也一并注释】
   ──────────────────────────────────────────────────────────────────
   -->
+  <!--
   <sensor>
     <force name="force_ee" site="ft_frame"/>
     <torque name="torque_ee" site="ft_frame"/>
   </sensor>
+  -->
 
   <!--
   ──────────────────────────────────────────────────────────────────
@@ -698,7 +721,8 @@
         finger_joint, left_inner_finger_joint, left_inner_knuckle_joint,
         right_outer_knuckle_joint, right_inner_finger_joint,
         right_inner_knuckle_joint。
-  ctrl：机械臂 7 个关节 + 夹爪 2 个执行器（finger_1/finger_2），置 0 表示张开。
+  ctrl：机械臂 7 个关节（夹爪已临时注释，对应的 finger_1/finger_2 执行器
+        不存在，故 ctrl 只保留 7 个分量，不再追加夹爪的 2 个分量）。
   ──────────────────────────────────────────────────────────────────
   -->
   <keyframe>
@@ -713,9 +737,9 @@
          不变，与执行器定义顺序 joint_1..7 一致，与 qpos 数组内部排列顺序
          无关）。 -->
     <key name="home"
-      ctrl="0 0.26179939 3.14159265 -2.26892803 0 0.95993109 1.57079633  0 0"/>
+      ctrl="0 0.26179939 3.14159265 -2.26892803 0 0.95993109 1.57079633"/>
     <!-- retract：收缩姿态，机械臂紧收，占用空间最小；夹爪张开 -->
     <key name="retract"
-      ctrl="0 -0.34906585 3.14159265 -2.54818071 0 -0.87266463 1.57079633  0 0"/>
+      ctrl="0 -0.34906585 3.14159265 -2.54818071 0 -0.87266463 1.57079633"/>
   </keyframe>
 </mujoco>
