@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-09_pick_and_place_nuts_mujoco.py
+10_pick_and_place_nuts_mujoco.py
 ---------------------------------
 Kinova Gen3 + Robotiq 2F-85 + 桌面固定俯视 D435i 相机的"感知(FoundationPose)
 位姿估计 + 键盘手动控制机械臂"演示。
@@ -73,10 +73,10 @@ nut_grasp_pose_round.json / tcp_flange.json），仅用于坐标变换计算+打
 --------
   # 交互式（需要图形界面）：先看相机画面，按 e 估计位姿，按 p 打印 6D 目标位姿，
   # 同时可以随时用数字键+[]/c/o 手动控制机械臂和夹爪
-  python 09_pick_and_place_nuts_mujoco.py --viewer
+  python 10_pick_and_place_nuts_mujoco.py --viewer
 
   # 无图形界面/自动化测试：自动模拟按键 'e' 后持续跟踪+打印
-  python 09_pick_and_place_nuts_mujoco.py --no_gui --auto --save_video output_3nuts/pose_estimation_vision.mp4
+  python 10_pick_and_place_nuts_mujoco.py --no_gui --auto --save_video output_3nuts/pose_estimation_vision.mp4
 """
 
 import argparse

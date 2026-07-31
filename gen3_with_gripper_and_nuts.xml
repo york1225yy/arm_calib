@@ -47,9 +47,9 @@
   <!-- 物理积分器：implicitfast 是隐式欧拉快速近似，适合刚体位置控制仿真 -->
   <option integrator="implicitfast"/>
 
-  <!-- 离屏渲染帧缓冲大小：09_pick_and_place_nuts_mujoco.py 用 mujoco.Renderer
-       保存高分辨率（默认 1280x720）视频时需要此处声明足够大的 offwidth/offheight，
-       否则默认帧缓冲仅 640x480，Renderer 初始化会报错。 -->
+  <!-- 离屏渲染帧缓冲大小：09_pick_and_estimate_nuts_mujoco.py / 10_pick_and_place_nuts_mujoco.py
+       用 mujoco.Renderer 保存高分辨率（默认 1280x720）视频时需要此处声明足够大的
+       offwidth/offheight，否则默认帧缓冲仅 640x480，Renderer 初始化会报错。 -->
   <visual>
     <global offwidth="1920" offheight="1080"/>
   </visual>
@@ -205,7 +205,7 @@
         注：螺母的世界坐标（尤其 y 方向）相比该场景原始设计（用于远距离
         相机大视野采集，y≈0.65，距机械臂基座 base_link(y=-0.5) 约 1.2~1.3 m）
         已整体平移拉近至机械臂基座附近——Kinova Gen3 7 轴臂的最大可达范围
-        约 0.9 m，若保留原摆放距离，09_pick_and_place_nuts_mujoco.py 中的
+        约 0.9 m，若保留原摆放距离，10_pick_and_place_nuts_mujoco.py 中的
         逆运动学将无法收敛到抓取目标（超出工作空间）。因此本场景把螺母/桌子
         /放置标记整体沿 -Y 方向平移，使其落入机械臂实际可达范围内，同时保持
         3 个螺母之间、初始区与放置区之间的相对布局不变。
@@ -248,7 +248,7 @@
 
       <freejoint> 说明：与该场景原始版本（gen3_with_two_nuts_and_round_nut.xml，
       仅用于相机采集/姿态验证）不同，这里给螺母加上了自由关节（6-DoF：3 平移
-      + 4 元数旋转），使其可以在 09_pick_and_place_nuts_mujoco.py 的抓取动画
+      + 4 元数旋转），使其可以在 10_pick_and_place_nuts_mujoco.py 的抓取动画
       中被真正"拿起并移动"——若不加自由关节，螺母是固连在世界坐标系的静态
       body，机械臂夹爪即使闭合到位，螺母也不会跟随移动（这正是之前视频里
       "爪子已经抓到但螺母没被真正抓起来"的根本原因：光靠 IK 让夹爪到位不会
@@ -353,7 +353,7 @@
 
     <!--
       放置目标区标记（仅供可视化参考，扁平色块，不参与碰撞）：
-        09_pick_and_place_nuts_mujoco.py 中把 3 个螺母分别从 y≈0.15 的初始位置
+        10_pick_and_place_nuts_mujoco.py 中把 3 个螺母分别从 y≈0.15 的初始位置
         抓取后放置到 y≈-0.05 的目标区（x 坐标与各自初始位置保持一致），
         这里用 3 个半透明彩色圆片在台面上标出对应目标落点，方便在 MuJoCo
         可视化窗口中直观确认放置是否到位。z=0.781 紧贴台面（台面上表面
@@ -371,7 +371,8 @@
 
     <!--
       头顶 D435i 摄像头（固定安装于桌子正上方，独立于机械臂，不随机械臂运动）：
-        用于 09_pick_and_place_nuts_mujoco.py 对桌面上 3 个螺母做 6D 位姿估计
+        用于 09_pick_and_estimate_nuts_mujoco.py / 10_pick_and_place_nuts_mujoco.py
+        对桌面上 3 个螺母做 6D 位姿估计
         （不再使用机械臂手腕上的相机——机械臂运动过程中手腕相机视角会剧烈
         变化甚至转到背对桌面，不适合做"边看边估计"的连续多目标跟踪；固定
         俯视相机全程视野稳定，可同时看到 3 个螺母的初始区和放置目标区）。
